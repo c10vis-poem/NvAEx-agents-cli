@@ -76,7 +76,7 @@ See the [full tutorial](https://google.github.io/agents-cli/guide/quickstart-tut
 | Command | What it does |
 |---------|-------------|
 | `agents-cli setup` | Install CLI + skills to coding agents |
-| `agents-cli create <name> -y` | Create a new agent project with defaults (`adk` template, `agent_runtime` target) |
+| `agents-cli create <name> -y` | Create a new agent project with defaults (`adk_python` template, `agent_runtime` target) |
 | `agents-cli eval run` | Run the agent over the eval dataset and grade the traces |
 | `agents-cli deploy` | Deploy to Google Cloud |
 | `agents-cli publish gemini` | Register with Gemini |
@@ -89,7 +89,7 @@ See the [full tutorial](https://google.github.io/agents-cli/guide/quickstart-tut
 | `agents-cli login` | Authenticate with Google Cloud or AI Studio |
 | `agents-cli login --status` | Show authentication status |
 | **Scaffold** | |
-| `agents-cli create <name> -y` | Create a new agent project with defaults (`adk` template, `agent_runtime` target) |
+| `agents-cli create <name> -y` | Create a new agent project with defaults (`adk_python` template, `agent_runtime` target) |
 | `agents-cli scaffold enhance` | Add deployment or CI/CD to an existing project |
 | `agents-cli scaffold upgrade` | Upgrade project to a newer agents-cli version |
 | **Develop** | |

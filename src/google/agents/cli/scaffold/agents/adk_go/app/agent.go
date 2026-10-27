@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package {{cookiecutter.agent_directory}} contains the root agent implementation.
-package {{cookiecutter.agent_directory}}
+// Package {{cookiecutter.agent_package}} contains the root agent implementation.
+package {{cookiecutter.agent_package}}
 
 import (
 	"context"

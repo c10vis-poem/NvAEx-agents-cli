@@ -53,3 +53,6 @@ e2e/load_test/.results/*.json
 credentials*.json
 
 deployment_metadata.json.lock
+
+# Files `scaffold enhance` moved aside from a repo it adopted.
+/.agents-cli-original/

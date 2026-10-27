@@ -25,9 +25,8 @@ from google.agents.cli import _tools
 from google.agents.cli._project import find_project_root
 from google.agents.cli._runner import run
 from google.agents.cli.deploy._utils import (
-    parse_key_value_pairs,
+    KeyValueChanges,
     print_table,
-    read_project_dotenv,
     redact_command,
 )
 from google.agents.cli.infra._terraform import SINGLE_PROJECT_TF_DIR
@@ -65,15 +64,15 @@ _GKE_CLOUD_SQL_TARGETS = (
 
 def deploy_gke(
     *,
-    project,
-    region,
-    image,
-    cluster_name,
-    env_vars,
-    dry_run,
-    service_name,
-    session_type,
-):
+    project: str,
+    region: str,
+    image: str | None,
+    cluster_name: str | None,
+    env_var_changes: KeyValueChanges,
+    dry_run: bool,
+    service_name: str,
+    session_type: str,
+) -> None:
     """GKE deployment: single linear flow with conditional steps.
 
     When ``image`` is provided (CI/CD mode), skips terraform and docker build.
@@ -173,15 +172,11 @@ def deploy_gke(
         check_err_msg="kubectl set image failed",
     )
 
-    # Step 5: Inject runtime env vars (AGENT_VERSION, --env-vars, APP_URL).
-    # A user-supplied value (via --env-vars) takes precedence over the
-    # CLI-derived defaults, matching the Cloud Run and Agent Runtime paths.
+    # Step 5: Inject runtime env vars (AGENT_VERSION, .env / --env-vars, APP_URL).
+    # A user-supplied value takes precedence over the CLI-derived defaults,
+    # matching the Cloud Run and Agent Runtime paths.
     project_root = find_project_root() or Path.cwd()
-    env_var_map = read_project_dotenv(project_root)
-    try:
-        env_var_map.update(parse_key_value_pairs(env_vars))
-    except ValueError as e:
-        raise click.ClickException(f"argument --env-vars: {e}") from e
+    env_var_map = dict(env_var_changes.updates)
 
     # Skip the version read (and its warning) when the user has already supplied one.
     if "AGENT_VERSION" not in env_var_map:

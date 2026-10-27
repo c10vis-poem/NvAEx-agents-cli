@@ -43,14 +43,9 @@ resource "google_cloudbuild_trigger" "pr_checks" {
   included_files = [
     "{{cookiecutter.agent_directory}}/**",
     "deployment/**",
-{%- if cookiecutter.language == "python" %}
-    "uv.lock",
-    "tests/**",
-{%- elif cookiecutter.language == "go" %}
-    "e2e/**",
-    "go.mod",
-    "go.sum",
-{%- endif %}
+{%- for path in cookiecutter.ci_trigger_files %}
+    "{{ path }}",
+{%- endfor %}
   ]
   include_build_logs = "INCLUDE_BUILD_LOGS_WITH_STATUS"
   depends_on = [
@@ -81,20 +76,15 @@ resource "google_cloudbuild_trigger" "cd_pipeline" {
   included_files = [
     "{{cookiecutter.agent_directory}}/**",
     "deployment/**",
-{%- if cookiecutter.language == "python" %}
-    "uv.lock",
-    "tests/**",
-{%- elif cookiecutter.language == "go" %}
-    "e2e/**",
-    "go.mod",
-    "go.sum",
-{%- endif %}
+{%- for path in cookiecutter.ci_trigger_files %}
+    "{{ path }}",
+{%- endfor %}
   ]
   include_build_logs = "INCLUDE_BUILD_LOGS_WITH_STATUS"
   substitutions = {
     _STAGING_PROJECT_ID            = var.staging_project_id
     _LOGS_BUCKET_NAME_STAGING      = resource.google_storage_bucket.logs_data_bucket[var.staging_project_id].name
-{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
+{%- if not cookiecutter.agent_identity_enabled %}
     _APP_SERVICE_ACCOUNT_STAGING   = google_service_account.app_sa["staging"].email
 {%- endif %}
     _REGION                        = var.region
@@ -137,7 +127,7 @@ resource "google_cloudbuild_trigger" "deploy_to_prod_pipeline" {
   substitutions = {
     _PROD_PROJECT_ID             = var.prod_project_id
     _LOGS_BUCKET_NAME_PROD       = resource.google_storage_bucket.logs_data_bucket[var.prod_project_id].name
-{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
+{%- if not cookiecutter.agent_identity_enabled %}
     _APP_SERVICE_ACCOUNT_PROD    = google_service_account.app_sa["prod"].email
 {%- endif %}
     _REGION                      = var.region

@@ -159,7 +159,8 @@ variable "agent_framework" {
   type        = string
   default     = "{{cookiecutter.framework}}"
 }
-{%- if cookiecutter.agent_runtime_identity_default == "agent_identity" %}
+{%- endif %}
+{%- if cookiecutter.agent_identity_enabled %}
 
 variable "agent_identity_roles" {
   description = "List of roles to assign to each agent's Agent Identity principal. Keep the first six in sync with AGENT_IDENTITY_ROLES in agents-cli, which `agents-cli deploy` grants."
@@ -178,5 +179,4 @@ variable "agent_identity_roles" {
 {%- endif %}
   ]
 }
-{%- endif %}
 {%- endif %}

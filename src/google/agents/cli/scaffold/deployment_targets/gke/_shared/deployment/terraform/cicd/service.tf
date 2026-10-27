@@ -388,7 +388,7 @@ resource "kubernetes_deployment_v1" "app_staging" {
           # to GCS via the completion hook, so NO_CONTENT.
           env {
             name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
-            value = "{% if cookiecutter.language == 'go' %}false{% else %}NO_CONTENT{% endif %}"
+            value = "{{cookiecutter.otel_capture_message_content_default}}"
           }
 
           env {
@@ -426,7 +426,7 @@ resource "kubernetes_deployment_v1" "app_staging" {
           }
 
           env {
-            name  = "{% if cookiecutter.language == "python" %}GOOGLE_GENAI_USE_ENTERPRISE{% else %}GOOGLE_GENAI_USE_VERTEXAI{% endif %}"
+            name  = "{{cookiecutter.genai_backend_env_var}}"
             value = "True"
           }
 {%- if cookiecutter.session_type == "cloud_sql" %}
@@ -452,7 +452,7 @@ resource "kubernetes_deployment_v1" "app_staging" {
             value = var.project_name
           }
 {%- endif %}
-{%- if cookiecutter.language == "python" and cookiecutter.bq_analytics %}
+{%- if cookiecutter.supports_bq_analytics and cookiecutter.bq_analytics %}
           env {
             name  = "BQ_ANALYTICS_DATASET_ID"
             value = google_bigquery_dataset.telemetry_dataset["staging"].dataset_id
@@ -508,14 +508,7 @@ resource "kubernetes_deployment_v1" "app_staging" {
           lifecycle {
             pre_stop {
               exec {
-{%- if cookiecutter.language == "go" %}
-                # The distroless runtime image has no `sleep` or shell, and the
-                # typed kubernetes provider can't express a native preStop.sleep,
-                # so invoke the app binary's own `sleep` subcommand (see main.go).
-                command = ["/agent", "sleep", "10"]
-{%- else %}
-                command = ["sleep", "10"]
-{%- endif %}
+                command = {{ cookiecutter.gke_prestop_command | tojson }}
               }
             }
           }
@@ -739,7 +732,7 @@ resource "kubernetes_deployment_v1" "app_prod" {
           # to GCS via the completion hook, so NO_CONTENT.
           env {
             name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
-            value = "{% if cookiecutter.language == 'go' %}false{% else %}NO_CONTENT{% endif %}"
+            value = "{{cookiecutter.otel_capture_message_content_default}}"
           }
 
           env {
@@ -777,7 +770,7 @@ resource "kubernetes_deployment_v1" "app_prod" {
           }
 
           env {
-            name  = "{% if cookiecutter.language == "python" %}GOOGLE_GENAI_USE_ENTERPRISE{% else %}GOOGLE_GENAI_USE_VERTEXAI{% endif %}"
+            name  = "{{cookiecutter.genai_backend_env_var}}"
             value = "True"
           }
 {%- if cookiecutter.session_type == "cloud_sql" %}
@@ -803,7 +796,7 @@ resource "kubernetes_deployment_v1" "app_prod" {
             value = var.project_name
           }
 {%- endif %}
-{%- if cookiecutter.language == "python" and cookiecutter.bq_analytics %}
+{%- if cookiecutter.supports_bq_analytics and cookiecutter.bq_analytics %}
           env {
             name  = "BQ_ANALYTICS_DATASET_ID"
             value = google_bigquery_dataset.telemetry_dataset["prod"].dataset_id
@@ -859,14 +852,7 @@ resource "kubernetes_deployment_v1" "app_prod" {
           lifecycle {
             pre_stop {
               exec {
-{%- if cookiecutter.language == "go" %}
-                # The distroless runtime image has no `sleep` or shell, and the
-                # typed kubernetes provider can't express a native preStop.sleep,
-                # so invoke the app binary's own `sleep` subcommand (see main.go).
-                command = ["/agent", "sleep", "10"]
-{%- else %}
-                command = ["sleep", "10"]
-{%- endif %}
+                command = {{ cookiecutter.gke_prestop_command | tojson }}
               }
             }
           }

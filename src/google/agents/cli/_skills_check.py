@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import time
 from pathlib import Path
 
@@ -60,16 +61,70 @@ def _parse_skill_version(skill_md: Path) -> str | None:
     return str(version) if version else None
 
 
-def _find_installed_skills() -> dict[str, str]:
-    """Return ``{skill_name: version}`` for every installed agents-cli skill.
+def list_skills_all_scopes() -> list[dict]:
+    """Return ``npx skills list --json`` entries for project and global scope.
 
-    Fast path (~8 ms): scan ``~/.agents/skills/google-agents-cli-*/SKILL.md``
-    directly.  Falls back to ``npx skills list --json`` (~400 ms+) if
-    the well-known directory is empty or missing, which is more robust
-    when skills are installed to a non-default location.
+    ``skills list`` without ``-g`` only reports project-scoped skills and
+    ``-g`` only reports global ones, so both are queried and merged. Entries
+    that share a path are reported once: run from the home directory, the
+    project store (``~/.agents/skills``) is also the global store.
+
+    Raises ``subprocess.CalledProcessError`` if the project query exits
+    non-zero, or ``ValueError`` if its output is not a JSON list. If only the
+    global query fails, the project entries are returned and a warning is
+    logged.
     """
     import json
 
+    from google.agents.cli._runner import run_resolved
+
+    entries: list[dict] = []
+    seen_paths: set[str] = set()
+    # Sequential on purpose: concurrent `npx -y` runs race on the shared npm
+    # cache when the package isn't downloaded yet.
+    for scope_args in ([], ["-g"]):
+        cmd = ["npx", "-y", SKILLS_NPX_PACKAGE, "list", *scope_args, "--json"]
+        try:
+            proc = run_resolved(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+            )
+            proc.check_returncode()
+            data = json.loads(proc.stdout)
+            if not isinstance(data, list):
+                raise ValueError(f"expected a JSON list, got {type(data).__name__}")
+        except (subprocess.SubprocessError, ValueError) as e:
+            if not scope_args:
+                raise
+            logging.warning(
+                "Could not list global skills; using project skills only: %s", e
+            )
+            continue
+        for entry in data:
+            path = entry.get("path") if isinstance(entry, dict) else None
+            if path in seen_paths:
+                continue
+            if path:
+                seen_paths.add(path)
+            entries.append(entry)
+    return entries
+
+
+def _find_installed_skills() -> dict[str, str] | None:
+    """Return ``{skill_name: version}`` for every installed agents-cli skill.
+
+    Fast path (~8 ms): scan ``~/.agents/skills/google-agents-cli-*/SKILL.md``
+    directly.  Falls back to ``npx skills list [-g] --json`` (~800 ms+) if
+    the well-known directory is empty or missing, which is more robust
+    when skills are installed to a non-default location.
+
+    Returns ``None`` if the npx query fails, so callers can tell "no skills
+    installed" apart from "could not check".
+    """
     result: dict[str, str] = {}
 
     # Fast path: well-known global install location
@@ -87,25 +142,15 @@ def _find_installed_skills() -> dict[str, str]:
 
     # Slow path: ask npx skills for actual install locations
     try:
-        from google.agents.cli._runner import run_resolved
-
-        proc = run_resolved(
-            ["npx", "-y", SKILLS_NPX_PACKAGE, "list", "--json"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-        )
-        if proc.returncode != 0:
-            return {}
-        entries = json.loads(proc.stdout)
+        entries = list_skills_all_scopes()
+    except subprocess.CalledProcessError:
+        return None
     except Exception as e:
         # Broad by design: this freshness check runs on every CLI invocation and
-        # must never abort a user's command, so any failure degrades to "no skills
-        # found" rather than propagating.
+        # must never abort a user's command, so any failure degrades to "could
+        # not check" rather than propagating.
         logging.warning("Could not query installed skills via npx: %s", e)
-        return {}
+        return None
 
     for entry in entries:
         if not isinstance(entry, dict):
@@ -131,26 +176,16 @@ def get_installed_skills() -> list[dict] | None:
 
     Returns None if the query fails.
     """
-    import json
-
     try:
-        from google.agents.cli._runner import run_resolved
-
-        result = run_resolved(
-            ["npx", "-y", SKILLS_NPX_PACKAGE, "list", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        if result.returncode != 0:
-            logging.warning(
-                "npx skills list failed (exit %d): %s",
-                result.returncode,
-                result.stderr.strip(),
-            )
-            return None
-        skills = json.loads(result.stdout)
+        skills = list_skills_all_scopes()
         return [s for s in skills if s.get("name", "").startswith("google-agents-cli-")]
+    except subprocess.CalledProcessError as e:
+        logging.warning(
+            "npx skills list failed (exit %d): %s",
+            e.returncode,
+            (e.stderr or "").strip(),
+        )
+        return None
     except Exception as e:
         logging.warning("Could not query installed skills: %s", e)
         return None
@@ -230,12 +265,15 @@ def check_skills_version() -> None:
         return
 
     installed = _find_installed_skills()
+    if installed is None:
+        # The query failed: don't record the stamp, so the next command retries.
+        return
+
+    _record_skills_check()
     if not installed:
         return
 
     from google.agents.cli import __version__
-
-    _record_skills_check()
 
     mismatched = {name: ver for name, ver in installed.items() if ver != __version__}
     if not mismatched:

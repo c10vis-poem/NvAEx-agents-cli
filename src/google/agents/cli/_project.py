@@ -22,7 +22,7 @@ import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import click
@@ -31,6 +31,9 @@ import yaml
 # Fallback for manifests written before the framework key existed. Those are all
 # ADK; new projects get the value from their template.
 DEFAULT_FRAMEWORK = "google-adk"
+
+# Base template used when a project does not name one. `adk` is an alias for it.
+DEFAULT_BASE_TEMPLATE = "adk_python"
 
 # Values of create_params.agent_runtime.identity_default.
 AGENT_IDENTITY = "agent_identity"
@@ -47,8 +50,18 @@ NESTED_CREATE_PARAMS = {
 # sit under a "create a project first:" line.
 CREATE_PROJECT_HINT = (
     "    agents-cli create my-agent -i    # choose options in prompts\n"
-    "    agents-cli create my-agent -y    # accept the defaults (adk template, agent_runtime target)"
+    "    agents-cli create my-agent -y    # accept the defaults (adk_python template, agent_runtime target)"
 )
+
+
+def agent_package_name(agent_directory: str) -> str:
+    """Return the package name (basename) of ``agent_directory``."""
+    return PurePosixPath(agent_directory).name
+
+
+def agents_root(agent_directory: str) -> str:
+    """Return the parent of ``agent_directory``, ``.`` for a top-level one."""
+    return PurePosixPath(agent_directory).parent.as_posix()
 
 
 @dataclass
@@ -60,9 +73,11 @@ class ProjectConfig:
     agent_directory: str = "app"
     is_a2a: bool = False
     region: str = "us-east1"
-    base_template: str = "adk"
+    base_template: str = DEFAULT_BASE_TEMPLATE
     acli_version: str = ""
-    language: str = "python"
+    # The manifest's language as written; None when it has no language key.
+    # Read `language` unless you need to tell "unset" apart from "python".
+    raw_language: str | None = None
     framework: str = DEFAULT_FRAMEWORK
     session_type: str = "none"
     cicd_runner: str = "skip"
@@ -72,6 +87,10 @@ class ProjectConfig:
     # The ADK name of the root agent. Empty means "derive it from the project
     # name"; see resolve_root_agent_name.
     root_agent_name: str = ""
+
+    @property
+    def language(self) -> str:
+        return self.raw_language or "python"
 
     @property
     def create_params(self) -> dict[str, Any]:
@@ -104,7 +123,7 @@ class ProjectConfig:
         cfg.acli_version = (
             data.get("acli_version") or data.get("version") or cfg.acli_version
         )
-        cfg.language = data.get("language", cfg.language)
+        cfg.raw_language = data.get("language")
         cfg.framework = data.get("framework", cfg.framework)
 
         create_params = data.get("create_params")

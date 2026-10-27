@@ -43,7 +43,7 @@ The command reads your `deployment_target` from `agents-cli-manifest.yaml` (unde
 The deployment target is set when you create your project:
 
 ```bash
-agents-cli create my-agent -a adk -d cloud_run    # or agent_runtime, gke
+agents-cli create my-agent -a adk_python -d cloud_run    # or agent_runtime, gke
 ```
 
 To change the deployment target for an existing project, use `scaffold enhance`:
@@ -70,7 +70,7 @@ agents-cli deploy --status  # Check deployment status
 
 ### Agent Runtime
 
-*Selected with `agents-cli create my-agent -a adk -d agent_runtime`, or `create_params.deployment_target: agent_runtime` in `agents-cli-manifest.yaml`.*
+*Selected with `agents-cli create my-agent -a adk_python -d agent_runtime`, or `create_params.deployment_target: agent_runtime` in `agents-cli-manifest.yaml`.*
 
 Fully managed runtime: you provide a `Dockerfile` (scaffolded for you) and Agent Runtime builds and runs the container — no cluster or service to operate:
 
@@ -93,7 +93,7 @@ agents-cli deploy --status      # Check progress later
 
 ### Cloud Run
 
-*Selected with `agents-cli create my-agent -a adk -d cloud_run`, or `create_params.deployment_target: cloud_run` in `agents-cli-manifest.yaml`.*
+*Selected with `agents-cli create my-agent -a adk_python -d cloud_run`, or `create_params.deployment_target: cloud_run` in `agents-cli-manifest.yaml`.*
 
 Builds a container from source and deploys as a Cloud Run service:
 
@@ -116,9 +116,11 @@ agents-cli deploy --image gcr.io/my-project/my-agent:v1
 !!! tip
     If you need more advanced Cloud Run deployment features not exposed via `agents-cli` flags, use `--dry-run` (or `-n`) to print the full `gcloud` command. You can then copy it and add additional arguments as needed.
 
+    The dry run first runs read-only checks on Google Cloud. It still prints the command when a check fails (❌), but then exits with code 1.
+
 ### GKE
 
-*Selected with `agents-cli create my-agent -a adk -d gke`, or `create_params.deployment_target: gke` in `agents-cli-manifest.yaml`.*
+*Selected with `agents-cli create my-agent -a adk_python -d gke`, or `create_params.deployment_target: gke` in `agents-cli-manifest.yaml`.*
 
 Deploys to a GKE cluster using Terraform and kubectl:
 

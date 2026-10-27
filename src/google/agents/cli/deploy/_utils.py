@@ -18,8 +18,8 @@ from __future__ import annotations
 
 import re
 import shlex
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -114,6 +114,14 @@ def resolve_service_name(cfg: ProjectConfig, override: str | None) -> str:
     return override or cfg.project_name or "agent"
 
 
+def cloud_run_service_url(*, project: str, region: str, service: str) -> str:
+    """Cloud Run Admin API v2 URL of a service."""
+    return (
+        f"https://{region}-run.googleapis.com/v2/projects/{project}"
+        f"/locations/{region}/services/{service}"
+    )
+
+
 def parse_key_value_pairs(kv_string: str | None) -> dict[str, str]:
     """Parse a comma-separated ``KEY=VALUE`` string into a dict.
 
@@ -122,27 +130,30 @@ def parse_key_value_pairs(kv_string: str | None) -> dict[str, str]:
     is ``None`` or empty.
 
     Raises:
-        ValueError: If a segment is malformed (has no ``=``).
+        ValueError: If an entry has no ``=``.
     """
     result = {}
     if kv_string:
-        for pair in kv_string.split(","):
-            if "=" in pair:
-                key, value = pair.split("=", 1)
-                result[key.strip()] = value.strip()
-            else:
-                raise ValueError(f"Malformed key-value pair: {pair}")
+        for position, pair in enumerate(kv_string.split(","), start=1):
+            key, sep, value = pair.partition("=")
+            if not sep:
+                raise ValueError(
+                    f"entry {position} has no '='. Pass comma-separated "
+                    "KEY=VALUE pairs; a value can't contain a comma."
+                )
+            result[key.strip()] = value.strip()
     return result
 
 
 def parse_kv_flag(flag: str, value: str | None) -> dict[str, str]:
-    """``parse_key_value_pairs`` for a CLI flag, failing with a ClickException."""
+    """``parse_key_value_pairs`` for a CLI flag, failing with a ClickException.
+
+    The error doesn't print the value, which can hold secrets.
+    """
     try:
         return parse_key_value_pairs(value)
     except ValueError as e:
-        raise click.ClickException(
-            f"Error parsing {flag} flag value '{value}': {e}"
-        ) from e
+        raise click.ClickException(f"Error parsing {flag}: {e}") from e
 
 
 def parse_value_list(value_string: str | None) -> list[str]:
@@ -153,16 +164,19 @@ def parse_value_list(value_string: str | None) -> list[str]:
     ``parse_key_value_pairs``. Returns ``[]`` when the input is ``None`` or empty.
 
     Raises:
-        ValueError: If a segment is malformed (contains ``=``).
+        ValueError: If an entry contains ``=``.
     """
     result: list[str] = []
     if value_string:
-        for item in value_string.split(","):
+        for position, item in enumerate(value_string.split(","), start=1):
             item = item.strip()
             if not item:
                 continue
             if "=" in item:
-                raise ValueError(f"Malformed value (unexpected '='): {item}")
+                raise ValueError(
+                    f"entry {position} contains '='. Pass comma-separated keys "
+                    "without values."
+                )
             result.append(item)
     return result
 
@@ -172,40 +186,43 @@ def parse_list_flag(flag: str, value: str | None) -> list[str]:
     try:
         return parse_value_list(value)
     except ValueError as e:
-        raise click.ClickException(
-            f"Error parsing {flag} flag value '{value}': {e}"
-        ) from e
+        raise click.ClickException(f"Error parsing {flag}: {e}") from e
 
 
-def apply_key_value_changes(
-    existing: Mapping[str, str],
-    updates: Mapping[str, str],
-    removals: Sequence[str],
-    clear: bool,
-) -> dict[str, str]:
-    """Return ``existing`` with clear, remove and update changes applied.
+@dataclass(frozen=True)
+class KeyValueChanges:
+    """Changes to a key-value setting such as labels, as gcloud's flags define.
 
-    The steps run in order: ``clear`` empties the map, ``removals`` drop keys
-    (missing keys are ignored), then ``updates`` set values. Callers reject a
-    key that is in both ``updates`` and ``removals``. Works on a copy;
-    ``existing`` is never mutated.
+    ``updates`` comes from ``--X`` / ``--update-X``, ``removals`` from
+    ``--remove-X`` and ``clear`` from ``--clear-X``. The deploy command rejects
+    a clear combined with removals, and a key in both updates and removals.
     """
-    resolved = {} if clear else dict(existing)
-    for key in removals:
-        resolved.pop(key, None)
-    resolved.update(updates)
-    return resolved
+
+    updates: Mapping[str, str] = field(default_factory=dict)
+    removals: tuple[str, ...] = ()
+    clear: bool = False
+
+    def apply(self, existing: Mapping[str, str]) -> dict[str, str]:
+        """Return ``existing`` with the changes applied, leaving it unmodified.
+
+        The steps run in order: ``clear`` empties the map, ``removals`` drop
+        keys (missing keys are ignored), then ``updates`` set values.
+        """
+        resolved = {} if self.clear else dict(existing)
+        for key in self.removals:
+            resolved.pop(key, None)
+        resolved.update(self.updates)
+        return resolved
 
 
-def parse_secrets(secrets_string: str | None) -> dict[str, dict[str, str]]:
-    """Parse secrets from ENV_VAR=SECRET_ID or ENV_VAR=SECRET_ID:VERSION format."""
-    try:
-        raw = parse_key_value_pairs(secrets_string)
-    except ValueError as e:
-        raise click.ClickException(f"Error parsing secrets: {e}") from e
+def parse_secret_refs(secrets: Mapping[str, str]) -> dict[str, dict[str, str]]:
+    """Split each ``SECRET_ID[:VERSION]`` value into ``{"secret", "version"}``.
 
+    ``secrets`` maps env var names to their parsed --secrets values. The version
+    defaults to ``latest``.
+    """
     result: dict[str, dict[str, str]] = {}
-    for key, spec in raw.items():
+    for key, spec in secrets.items():
         if ":" not in spec:
             secret_id, version = spec, "latest"
         else:

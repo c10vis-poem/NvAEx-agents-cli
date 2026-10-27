@@ -19,6 +19,12 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 7.28.0"
     }
+{%- if cookiecutter.deployment_target == 'cloud_run' %}
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 8.7"
+    }
+{%- endif %}
     random = {
       source  = "hashicorp/random"
       version = "~> 3.7.0"

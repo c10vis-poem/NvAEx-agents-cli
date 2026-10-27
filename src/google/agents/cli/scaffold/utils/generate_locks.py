@@ -15,7 +15,9 @@
 
 """Utility script to generate lock files for all agent and deployment target combinations."""
 
+import json
 import logging
+import os
 import pathlib
 import shutil
 import tempfile
@@ -23,8 +25,10 @@ import tempfile
 import click
 from jinja2 import StrictUndefined, Template
 
+from google.agents.cli._project import agent_package_name
 from google.agents.cli._runner import run_resolved
 
+from .language import LANGUAGE_CONFIGS
 from .lock_utils import _scaffold_root, get_agent_configs, get_lock_filename
 
 # go.mod/go.sum and package.json/package-lock.json live in the agent layer: the
@@ -79,6 +83,7 @@ def generate_pyproject(
             "tags": tags,
             "is_a2a": "a2a" in tags,
             "agent_directory": config.get("agent_directory", "app"),
+            "agent_package": agent_package_name(config.get("agent_directory", "app")),
             "agent_name": config.get("agent_name", ""),
             "agent_description": config.get("description", ""),
             "generated_at": "",
@@ -256,6 +261,13 @@ def generate_typescript_lock_file() -> None:
             ],
             check=True,
             capture_output=True,
+            # The template is hidden from create while its experiment is off.
+            env={
+                **os.environ,
+                "AGENTS_CLI_EXPERIMENTS": json.dumps(
+                    {LANGUAGE_CONFIGS["typescript"]["experiment"]: True}
+                ),
+            },
         )
 
         project_dir = tmp_dir / project_name
@@ -297,8 +309,8 @@ def main(template: pathlib.Path | None) -> None:
 
     # Generate Python lock files
     for agent_name, config in agent_configs.items():
-        # Skip Go, Java, and TypeScript agents (they use their own dependency management)
-        if config.get("language") in ("go", "java", "typescript"):
+        # Only Python agents use uv lock files; other languages manage their own
+        if config.get("language", "python") != "python":
             continue
 
         for target in config["deployment_targets"]:

@@ -25,19 +25,16 @@ import logging
 import os
 import re
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
 
 import agentplatform
 import click
 import pathspec
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
-from google.cloud import resourcemanager_v3
 from google.genai.errors import APIError
 from google.genai.types import EncryptionSpec
-from google.iam.v1 import iam_policy_pb2, policy_pb2
 
 from google.agents.cli import _sdk_compat
 from google.agents.cli._agent_platform import AgentPlatformClient
@@ -51,6 +48,10 @@ from google.agents.cli._project import (
 )
 from google.agents.cli._remote import build_agent_runtime_passthrough_url
 from google.agents.cli.deploy import _build_logs
+from google.agents.cli.deploy._agent_identity import (
+    AGENT_IDENTITY_ROLES,
+    grant_roles_to_principal,
+)
 from google.agents.cli.deploy._operation import (
     METADATA_FILE,
     METADATA_LOCK_FILE,
@@ -70,12 +71,11 @@ from google.agents.cli.deploy._utils import (
     DEFAULT_MAX_INSTANCES,
     DEFAULT_MEMORY,
     DEFAULT_MIN_INSTANCES,
+    KeyValueChanges,
     MachineShape,
-    apply_key_value_changes,
     parse_kv_flag,
-    parse_secrets,
+    parse_secret_refs,
     print_table,
-    read_project_dotenv,
     resolve_service_name,
     validate_deployment_region,
 )
@@ -97,6 +97,10 @@ warnings.filterwarnings(
 # from the deploy region, so we keep it. Filtered from the propagated .env.
 _AGENT_RUNTIME_RESERVED_ENV = frozenset({"GOOGLE_CLOUD_PROJECT"})
 
+# Default for deploy_agent_runtime's env_var_changes, secret_changes and
+# label_changes.
+_NO_CHANGES = KeyValueChanges()
+
 
 # The shape of spec.effective_identity that denotes Agent Identity.
 # Accepts strings that follow the pattern
@@ -104,16 +108,6 @@ _AGENT_RUNTIME_RESERVED_ENV = frozenset({"GOOGLE_CLOUD_PROJECT"})
 _AGENT_IDENTITY_PRINCIPAL_RE = re.compile(
     r"^agents\.global\.[^/]+\.system\.id\.goog/resources/aiplatform/"
     r"projects/[^/]+/locations/[^/]+/reasoningEngines/[^/]+$"
-)
-
-
-AGENT_IDENTITY_ROLES = (
-    "roles/aiplatform.user",
-    "roles/serviceusage.serviceUsageConsumer",
-    "roles/browser",
-    "roles/cloudapiregistry.viewer",
-    "roles/logging.logWriter",
-    "roles/monitoring.metricWriter",
 )
 
 
@@ -230,9 +224,7 @@ def print_agent_runtime_dry_run(
     agent_gateway_egress: str | None,
     agent_gateway_ingress: str | None,
     kms_key: str | None,
-    update_labels: Mapping[str, str],
-    remove_labels: Sequence[str],
-    clear_labels: bool,
+    label_changes: KeyValueChanges,
 ) -> None:
     """Print what an Agent Runtime deploy would create or update."""
     # Fill defaults FOR DISPLAY ONLY — the real call passes raw (possibly-None)
@@ -275,13 +267,14 @@ def print_agent_runtime_dry_run(
         elif gateway is not None:
             msg += f"\n  Agent Gateway {label}: (cleared)"
     # Clear/remove only act on an existing engine's labels.
-    if clear_labels:
+    if label_changes.clear:
         msg += "\n  Labels: all cleared (no effect on create)"
-    if update_labels:
-        pairs = ", ".join(f"{k}={v}" for k, v in update_labels.items())
+    if label_changes.updates:
+        pairs = ", ".join(f"{k}={v}" for k, v in label_changes.updates.items())
         msg += f"\n  Labels to add/update: {pairs}"
-    if remove_labels:
-        msg += f"\n  Labels to remove: {', '.join(remove_labels)} (no effect on create)"
+    if label_changes.removals:
+        removals = ", ".join(label_changes.removals)
+        msg += f"\n  Labels to remove: {removals} (no effect on create)"
     click.echo(msg)
 
 
@@ -293,11 +286,9 @@ def deploy_agent_runtime(
     location: str = "us-east1",
     description: str | None = None,
     source_packages: list[str] | None = None,
-    env_vars: str | None = None,
-    set_secrets: str | None = None,
-    update_labels: Mapping[str, str] = MappingProxyType({}),
-    remove_labels: Sequence[str] = (),
-    clear_labels: bool = False,
+    env_var_changes: KeyValueChanges = _NO_CHANGES,
+    secret_changes: KeyValueChanges = _NO_CHANGES,
+    label_changes: KeyValueChanges = _NO_CHANGES,
     service_account: str | None = None,
     min_instances: int | None = None,
     max_instances: int | None = None,
@@ -324,13 +315,13 @@ def deploy_agent_runtime(
         location: GCP region.
         description: Description of the agent.
         source_packages: Source packages to deploy.
-        env_vars: Comma-separated KEY=VALUE env vars.
-        set_secrets: Comma-separated ENV_VAR=SECRET_ID pairs.
-        update_labels: {key: value} label pairs to add or update.
-        remove_labels: Label keys to remove from the live label set. Keys that
-            don't exist are ignored.
-        clear_labels: If True, remove all labels before applying
-            ``update_labels``. Not combined with ``remove_labels``.
+        env_var_changes: Env var changes; the updates hold the project .env with
+            --env-vars on top.
+        secret_changes: Secret changes, with ENV_VAR: SECRET_ID[:VERSION]
+            updates. The updates replace the agent's secrets; a clear with no
+            updates removes them all.
+        label_changes: Label changes. Removals and a clear act on the live labels, so
+            they have no effect on create.
         service_account: Service account email.
         min_instances: Minimum number of instances.
         max_instances: Maximum number of instances.
@@ -388,15 +379,14 @@ def deploy_agent_runtime(
     if agent_gateway_egress:
         _require_gateway_ready_project(cfg)
 
-    # Parse CLI environment variables and secrets.
-    secrets = parse_secrets(set_secrets)
+    secrets = parse_secret_refs(secret_changes.updates)
     agent_gateway_config = _build_agent_gateway_config(
         egress_gateway_name=agent_gateway_egress,
         ingress_gateway_name=agent_gateway_ingress,
     )
 
     runtime_env_vars = _build_runtime_env_vars(
-        env_vars=env_vars,
+        env_vars=env_var_changes.updates,
         secrets=secrets,
         port=port,
         language=cfg.language,
@@ -434,8 +424,11 @@ def deploy_agent_runtime(
         # first-time spec deploy so the conservative defaults must apply.
         is_update = bool(matching_agents)
 
-        if not is_update and agent_identity is None:
-            agent_identity = cfg.agent_runtime_identity_default == AGENT_IDENTITY
+        agent_identity = should_use_agent_identity(
+            agent_identity_flag=agent_identity,
+            identity_default=cfg.agent_runtime_identity_default,
+            is_update=is_update,
+        )
 
         if agent_identity:
             if service_account:
@@ -484,7 +477,7 @@ def deploy_agent_runtime(
         existing_kms_key: str | None = None
 
         # None leaves labels out of the update mask, so the live ones are preserved.
-        labels = dict(update_labels) or None
+        resolved_labels = dict(label_changes.updates) or None
 
         if matching_agents:
             matching_api_resource = matching_agents[0].api_resource
@@ -512,10 +505,8 @@ def deploy_agent_runtime(
             for key, value in _existing_plain_env_vars(existing).items():
                 runtime_env_vars.setdefault(key, value)
             # The labels mask path replaces the whole map, so send it in full.
-            if update_labels or remove_labels or clear_labels:
-                labels = apply_key_value_changes(
-                    _existing_labels(existing), update_labels, remove_labels, clear_labels
-                )
+            if label_changes.updates or label_changes.removals or label_changes.clear:
+                resolved_labels = label_changes.apply(_existing_labels(existing))
             # Point the A2A agent card at the real Agent Runtime HTTP passthrough
             # instead of localhost; needs the existing engine's resource name, so a
             # first-time create picks it up on the next deploy.
@@ -550,7 +541,7 @@ def deploy_agent_runtime(
             "service_account": service_account,
             "identity_type": _resolve_identity_type(agent_identity),
             "description": description,
-            "labels": labels,
+            "labels": resolved_labels,
             "min_instances": min_instances,
             "max_instances": max_instances,
             "container_concurrency": container_concurrency,
@@ -741,9 +732,10 @@ def deploy_agent_runtime(
         if migrates_to_agent_identity:
             grant_agent_identity_roles(project, remote_agent)
 
-        # Clear secrets if explicitly set to empty
+        # The update leaves secret_env alone when it sets no secrets, so a clear
+        # with nothing to set needs its own update.
         if (
-            set_secrets is not None
+            secret_changes.clear
             and not secrets
             and matching_agents
             and remote_agent.api_resource
@@ -1026,16 +1018,17 @@ def _validate_gateway_name(gateway: str, *, name: str) -> str:
 
 def _build_runtime_env_vars(
     *,
-    env_vars: str | None,
+    env_vars: Mapping[str, str],
     secrets: dict[str, dict[str, str]],
     port: int | None = None,
-    language: str | None = None,
+    language: str,
 ) -> dict[str, Any]:
     """Assemble the runtime env vars for the deployed Agent Runtime.
 
-    Precedence (highest first): ``--env-vars`` / ``--secrets``, then the
-    project ``.env``, then these overridable defaults. ``GOOGLE_CLOUD_PROJECT`` is
-    dropped — Agent Runtime reserves it (the platform injects it) and rejects it.
+    Precedence (highest first): ``--secrets``, then ``env_vars`` (the project
+    ``.env`` with ``--env-vars`` on top), then these overridable defaults.
+    ``GOOGLE_CLOUD_PROJECT`` is dropped — Agent Runtime reserves it (the platform
+    injects it) and rejects it.
     The backend defaults to Gemini platform (at ``GOOGLE_CLOUD_LOCATION=global``) unless
     the ``.env`` supplies an AI Studio API key:
 
@@ -1048,11 +1041,7 @@ def _build_runtime_env_vars(
       default: Go uses ``false`` (opt-in; set ``true`` for the completions view),
       Python keeps ``NO_CONTENT`` (content goes to GCS via the completion hook).
     """
-    # Project .env is the base layer; explicit --env-vars wins over it.
-    runtime_env_vars: dict[str, Any] = read_project_dotenv(
-        find_project_root() or Path.cwd()
-    )
-    runtime_env_vars.update(parse_kv_flag("--env-vars", env_vars))
+    runtime_env_vars: dict[str, Any] = dict(env_vars)
     runtime_env_vars.update(secrets)  # type: ignore[arg-type]
     # Agent Runtime injects these itself; including them in deployment_spec.env is
     # rejected with FAILED_PRECONDITION ("... is reserved").
@@ -1082,20 +1071,20 @@ def _build_runtime_env_vars(
             "GOOGLE_GENAI_USE_ENTERPRISE" not in runtime_env_vars
             and "GOOGLE_GENAI_USE_VERTEXAI" not in runtime_env_vars
         ):
+            # Set the legacy name for every language, plus the name the language's
+            # SDK reads (GOOGLE_GENAI_USE_ENTERPRISE for Python). The legacy one
+            # stays for Python projects locked to google-adk < 2.3.0 /
+            # google-genai < 1.74.0, which deploy with the latest CLI from CI (no
+            # .env there) and ignore the new name.
+            backend_env_var = get_language_config(language)["genai_backend_env_var"]
             runtime_env_vars["GOOGLE_GENAI_USE_VERTEXAI"] = "true"
-            # Python also gets the new name. The legacy one stays for projects
-            # locked to google-adk < 2.3.0 / google-genai < 1.74.0, which deploy with
-            # the latest CLI from CI (no .env there) and ignore the new name.
-            if language == "python":
-                runtime_env_vars["GOOGLE_GENAI_USE_ENTERPRISE"] = "true"
+            runtime_env_vars[backend_env_var] = "true"
         runtime_env_vars.setdefault("GOOGLE_CLOUD_LOCATION", "global")
     runtime_env_vars.setdefault("GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY", "true")
-    # Prompt/response content capture, off by default (opt-in). Go: set "true" to
-    # log content to OTLP log events for the completions view (parsed as a boolean).
-    # Python: content goes to GCS via the completion hook, so NO_CONTENT.
+    # Prompt/response content capture, off by default (opt-in).
     runtime_env_vars.setdefault(
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
-        "false" if language == "go" else "NO_CONTENT",
+        get_language_config(language)["otel_capture_message_content_default"],
     )
     # Fail closed: ADK defaults content-in-spans to true; keep it off for bare deploys.
     runtime_env_vars.setdefault("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "false")
@@ -1220,6 +1209,19 @@ def _existing_labels(agent: types.Runtime) -> dict[str, str]:
     if not agent.api_resource:
         return {}
     return agent.api_resource.labels or {}
+
+
+def should_use_agent_identity(
+    *, agent_identity_flag: bool | None, identity_default: str, is_update: bool
+) -> bool | None:
+    """Whether the deploy uses Agent Identity, or None to keep the engine's identity.
+
+    The --agent-identity flag wins. Without it, a new engine follows the
+    manifest default.
+    """
+    if agent_identity_flag is None and not is_update:
+        return identity_default == AGENT_IDENTITY
+    return agent_identity_flag
 
 
 def _resolve_identity_type(agent_identity: bool | None) -> types.IdentityType | None:
@@ -1402,20 +1404,7 @@ def grant_agent_identity_roles(project: str, agent: types.Runtime) -> None:
         )
         return
 
-    principal = f"principal://{effective_identity}"
-    click.echo(f"🔐 Granting IAM roles to: {principal}")
-    proj_client = resourcemanager_v3.ProjectsClient()
-    policy = proj_client.get_iam_policy(
-        request=iam_policy_pb2.GetIamPolicyRequest(resource=f"projects/{project}")
-    )
-    for role in AGENT_IDENTITY_ROLES:
-        policy.bindings.append(policy_pb2.Binding(role=role, members=[principal]))
-    proj_client.set_iam_policy(
-        request=iam_policy_pb2.SetIamPolicyRequest(
-            resource=f"projects/{project}", policy=policy
-        )
-    )
-    click.echo("  ✅ Agent identity ready")
+    grant_roles_to_principal(project, f"principal://{effective_identity}")
 
 
 def _start_and_record_operation(

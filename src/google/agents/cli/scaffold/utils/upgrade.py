@@ -597,7 +597,7 @@ def write_python_dependencies(
         return False
 
 
-def _load_dependencies_from_go_mod(go_mod_path: pathlib.Path) -> dict[str, str]:
+def load_go_mod_requirements(go_mod_path: pathlib.Path) -> dict[str, str]:
     """Load go.mod requirements as ``{module_path: "@version"}``.
 
     Parsing is delegated to ``go mod edit -json``.
@@ -650,9 +650,9 @@ def merge_go_dependencies(
     Same 3-way logic as :func:`merge_python_dependencies`, over go.mod requirements.
     """
     return _resolve_dependencies(
-        _load_dependencies_from_go_mod(current_project / "go.mod"),
-        _load_dependencies_from_go_mod(old_template_project / "go.mod"),
-        _load_dependencies_from_go_mod(new_template_project / "go.mod"),
+        load_go_mod_requirements(current_project / "go.mod"),
+        load_go_mod_requirements(old_template_project / "go.mod"),
+        load_go_mod_requirements(new_template_project / "go.mod"),
     )
 
 
@@ -747,8 +747,8 @@ def union_go_dependencies(
 
     See union_python_dependencies for how the old template is derived.
     """
-    current = _load_dependencies_from_go_mod(current_project / "go.mod")
-    new = _load_dependencies_from_go_mod(new_template_project / "go.mod")
+    current = load_go_mod_requirements(current_project / "go.mod")
+    new = load_go_mod_requirements(new_template_project / "go.mod")
     old = {name: spec for name, spec in current.items() if name in new}
     return _resolve_dependencies(current, old, new)
 

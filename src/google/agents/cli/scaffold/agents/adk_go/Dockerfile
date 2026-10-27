@@ -29,6 +29,9 @@ COPY *.go ./
 COPY {{cookiecutter.agent_directory}}/ ./{{cookiecutter.agent_directory}}/
 COPY appinfo/ ./appinfo/
 COPY sessions/ ./sessions/
+{%- for package_dir in cookiecutter.extra_go_package_dirs %}
+COPY {{ package_dir }}/ ./{{ package_dir }}/
+{%- endfor %}
 
 # Build the binary
 RUN CGO_ENABLED=0 GOOS=linux go build -o /agent .

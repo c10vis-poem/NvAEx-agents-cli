@@ -28,6 +28,7 @@ from rich.prompt import IntPrompt, Prompt
 
 from google.agents.cli._output import Console, configure_logging
 from google.agents.cli._project import (
+    DEFAULT_BASE_TEMPLATE,
     ProjectConfig,
     find_project_config,
 )
@@ -39,6 +40,7 @@ from ..utils.backup import make_backup_pre_apply_hook
 from ..utils.cli_options import InteractionMode, shared_template_options
 from ..utils.generation_metadata import metadata_to_cli_args
 from ..utils.language import (
+    LANGUAGE_CONFIGS,
     find_agent_file,
     get_agent_file_hint,
     get_language_config,
@@ -487,7 +489,6 @@ def display_agent_directory_selection(
     current_dir: pathlib.Path,
     detected_directory: str,
     language: str,
-    base_template: str | None = None,
 ) -> str:
     """Display available directories and prompt for agent directory selection."""
     while True:
@@ -539,7 +540,7 @@ def display_agent_directory_selection(
         for dir_name in available_dirs:
             directory_choices[choice_num] = dir_name
             # Check if this directory might contain agent code
-            hint = get_agent_file_hint(current_dir / dir_name, base_template)
+            hint = get_agent_file_hint(current_dir / dir_name)
             console.print(f"  {choice_num}. [bold]{dir_name}[/]{hint}")
             if (
                 default_choice is None
@@ -826,7 +827,7 @@ def _run_smart_merge(
 @click.option(
     "--adk",
     is_flag=True,
-    help="Shortcut for --base-template adk",
+    help="Shortcut for --base-template adk_python",
     default=False,
 )
 @click.option(
@@ -894,7 +895,9 @@ def enhance(
 
     If the project has an agents-cli-manifest.yaml, the template recorded there
     is re-applied and TEMPLATE_PATH is ignored. Pass a local directory or a
-    remote spec (org/repo@tag) for a project agents-cli did not create.
+    remote spec (org/repo@tag) for a project agents-cli did not create. Your
+    files the template replaces, such as pyproject.toml, are moved to
+    .agents-cli-original/ so you can port them; the rest stay where they are.
 
     --base-template is separate. It names a base template this CLI ships, which
     sits underneath whatever TEMPLATE_PATH supplies.
@@ -947,10 +950,7 @@ def enhance(
     )
 
     if dry_run and force:
-        console.print(
-            "[bold red]Error:[/bold red] --dry-run is not compatible with --force mode."
-        )
-        return
+        raise click.UsageError("--dry-run is not compatible with --force mode.")
 
     # Before the saved-config replay and smart-merge, which re-apply the
     # recorded template and would otherwise ignore a typed adk@ silently.
@@ -1011,11 +1011,10 @@ def enhance(
                 # auto_approve with no CLI overrides
                 if dry_run:
                     # Can't do anything non-interactively without overrides
-                    console.print(
-                        "[bold red]Error:[/bold red] --dry-run requires specifying what to change "
+                    raise click.UsageError(
+                        "--dry-run requires specifying what to change "
                         "(e.g. --deployment-target cloud_run) or interactive customization."
                     )
-                    return
                 # Use saved config subprocess
                 if check_and_execute_with_saved_config(
                     project_dir=current_dir,
@@ -1041,14 +1040,14 @@ def enhance(
             # If smart-merge returned False, fall through to brute-force
             logging.warning("Smart-merge failed, falling back to standard mode.")
         elif dry_run:
-            console.print(
-                "[bold red]Error:[/bold red] --dry-run requires saved project metadata "
+            raise click.UsageError(
+                "--dry-run requires saved project metadata "
                 "(agents-cli-manifest.yaml file)."
             )
-            return
         elif has_cli_overrides:
             console.print(
-                "[dim]No saved metadata found - using standard overwrite mode.[/dim]"
+                "[dim]No agents-cli manifest found - moving your files the "
+                "template replaces to .agents-cli-original/.[/dim]"
             )
     else:
         # --force or subprocess re-execution
@@ -1101,7 +1100,7 @@ def enhance(
             raise click.ClickException(
                 "Cannot use --adk with --base-template. Use one or the other."
             )
-        base_template = "adk"
+        base_template = DEFAULT_BASE_TEMPLATE
 
     # Resolve base template aliases (backwards compatibility)
     base_template = resolve_agent_alias(base_template)
@@ -1167,9 +1166,10 @@ def enhance(
             cli_overrides["settings"] = cli_overrides.get("settings", {})
             cli_overrides["settings"]["agent_directory"] = agent_directory
 
-        # Load config from current directory for inheritance info
-        current_dir = pathlib.Path.cwd()
-        source_config = load_remote_template_config(current_dir, cli_overrides)
+        # Inheritance info comes from the template being applied: the current
+        # directory for `local@.`, otherwise the template directory.
+        template_dir = template_path.resolve()
+        source_config = load_remote_template_config(template_dir, cli_overrides)
         original_base_template_name = get_base_template_name(source_config)
 
         # Interactive base template selection if not provided via CLI and in interactive mode
@@ -1190,23 +1190,26 @@ def enhance(
                     f"✅ Selected base template: [cyan]{selected_base_template}[/cyan]"
                 )
                 console.print()
-        elif not base_template and not remote_template.is_template_spec(
-            original_base_template_name
+        elif (
+            not base_template
+            and agent_spec == "local@."
+            and not remote_template.is_template_spec(original_base_template_name)
         ):
             # Auto-select the detected base template in non-interactive mode.
             # A project made from a fetched template records that template's
             # spec here, which names the source, not a base layer this CLI
-            # ships, so leave it for the template itself to declare.
+            # ships, so leave it for the template itself to declare. Any other
+            # template directory declares its own base the same way.
             base_template = original_base_template_name
 
         # Reload config with potential base template override
         if cli_overrides.get("base_template"):
-            source_config = load_remote_template_config(current_dir, cli_overrides)
+            source_config = load_remote_template_config(template_dir, cli_overrides)
 
         base_template_name = get_base_template_name(source_config)
 
         # Show current inheritance info
-        if interactive or base_template:
+        if interactive or base_template or agent_spec != "local@.":
             console.print()
             console.print(
                 f"Template inherits from base: [cyan][link=https://github.com/google/agents-cli/tree/main/agents/{base_template_name}]{base_template_name}[/link][/cyan]"
@@ -1217,38 +1220,30 @@ def enhance(
     if template_path == pathlib.Path("."):
         current_dir = pathlib.Path.cwd()
 
-        # Detect if this is a Go, Java, or TypeScript project from base_template or config
-        is_go_project = base_template and base_template.endswith("_go")
-        is_java_project = base_template and base_template.endswith("_java")
-        is_ts_project = base_template and base_template.endswith("_ts")
+        # load_remote_template_config already rejected supported-language conflicts.
         acli_config = find_project_config(current_dir)
-        if acli_config:
-            if acli_config.language == "go":
-                is_go_project = True
-            elif acli_config.language == "java":
-                is_java_project = True
-            elif acli_config.language == "typescript":
-                is_ts_project = True
-        elif not (is_go_project or is_java_project or is_ts_project):
-            # No manifest and no --base-template language hint, so every
-            # language-dependent default below falls back to Python.
-            console.print(
-                "[dim]No saved metadata found - defaulting to Python as project "
-                "language.[/dim]"
-            )
+        project_language = (
+            acli_config.raw_language if acli_config else None
+        ) or _language_from_base_template(base_template)
+        if project_language is None:
+            if not acli_config:
+                console.print(
+                    "[dim]No saved metadata found - defaulting to Python as project "
+                    "language.[/dim]"
+                )
+            project_language = "python"
 
         # Determine agent directory: CLI param > config detection > language default
-        if is_java_project:
-            detected_agent_directory = "src/main/java"
-        else:
-            detected_agent_directory = "app"
+        detected_agent_directory = get_language_config(project_language)[
+            "default_agent_directory"
+        ]
         if not agent_directory:  # Only try to detect if not provided via CLI
             # First check .acli.toml/pyproject.toml config
             config_agent_dir = acli_config.agent_directory if acli_config else None
 
             if config_agent_dir and isinstance(config_agent_dir, str):
                 detected_agent_directory = config_agent_dir
-            elif not is_go_project and not is_java_project:
+            elif project_language == "python":
                 # For Python, also try to detect from hatch config
                 pyproject_path = current_dir / "pyproject.toml"
                 if pyproject_path.exists():
@@ -1277,7 +1272,7 @@ def enhance(
         if not agent_directory and interactive:
             selection_language = acli_config.language if acli_config else "python"
             selected_agent_directory = display_agent_directory_selection(
-                current_dir, detected_agent_directory, selection_language, base_template
+                current_dir, detected_agent_directory, selection_language
             )
             final_agent_directory = selected_agent_directory
             console.print(
@@ -1346,15 +1341,7 @@ def enhance(
                     console.print("✋ [yellow]Enhancement cancelled.[/yellow]")
                     return
         else:
-            # Detect language for proper agent file handling
-            language = "python"  # default
-            if is_go_project:
-                language = "go"
-            elif is_java_project:
-                language = "java"
-            elif is_ts_project:
-                language = "typescript"
-
+            language = project_language
             lang_config = get_language_config(language)
             required_var = lang_config.get("agent_variable", "root_agent")
 
@@ -1364,7 +1351,7 @@ def enhance(
             if agent_file and agent_file.name == "root_agent.yaml":
                 # YAML config agent detected
                 console.print(
-                    f"✅ Found [cyan]{agent_file.relative_to(current_dir)}[/cyan] (YAML config agent)"
+                    f"✅ Found [cyan]{agent_file.relative_to(current_dir).as_posix()}[/cyan] (YAML config agent)"
                 )
                 console.print(
                     "   An agent.py shim will be generated automatically for deployment compatibility."
@@ -1375,7 +1362,7 @@ def enhance(
             elif agent_file:
                 # Agent file found
                 console.print(
-                    f"✅ Found [cyan]{agent_file.relative_to(current_dir)}[/cyan]"
+                    f"✅ Found [cyan]{agent_file.relative_to(current_dir).as_posix()}[/cyan]"
                 )
 
                 # Validate the agent file contains the required variable
@@ -1508,6 +1495,17 @@ def _template_spec(template_path: pathlib.Path) -> str:
     pathlib turns ``https://`` into ``https:/``, and ``/`` into ``\\`` on Windows.
     """
     return re.sub(r"^([a-zA-Z][\w+.-]+):/(?!/)", r"\1://", template_path.as_posix())
+
+
+def _language_from_base_template(base_template: str | None) -> str | None:
+    """Return the language a --base-template name implies, or None if no hint."""
+    if not base_template:
+        return None
+    for language, config in LANGUAGE_CONFIGS.items():
+        suffix = config["base_template_suffix"]
+        if suffix and base_template.endswith(suffix):
+            return language
+    return None
 
 
 def _metadata_updates_from_overrides(cli_overrides: dict[str, Any]) -> dict[str, Any]:

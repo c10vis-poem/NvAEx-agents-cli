@@ -23,7 +23,7 @@ from pathlib import Path
 import click
 
 from google.agents.cli._runner import run
-from google.agents.cli._skills_check import SKILLS_NPX_PACKAGE
+from google.agents.cli._skills_check import SKILLS_NPX_PACKAGE, list_skills_all_scopes
 from google.agents.cli._tools import DEFAULT_SKILLS_SOURCE, run_npx_skills
 from google.agents.cli.skills._bundle import (
     SKILL_BUNDLE_DIR,
@@ -184,16 +184,9 @@ def _check_legacy_skills():
     """Check for legacy ADK skills and warn the user if found."""
     # ── Legacy Skills Detection ──
     try:
-        import json
         import logging
 
-        # Run raw command to get all skills without filtering
-        result = run(
-            ["npx", "-y", SKILLS_NPX_PACKAGE, "list", "--json"],
-            capture=True,
-            timeout=15,
-        )
-        installed_skills = json.loads(result.stdout)
+        installed_skills = list_skills_all_scopes()
         legacy_skills = {
             "adk-cheatsheet",
             "adk-deploy-guide",

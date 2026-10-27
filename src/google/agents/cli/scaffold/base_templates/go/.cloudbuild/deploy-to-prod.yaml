@@ -86,7 +86,7 @@ steps:
         {%- endif %}
           --project ${_PROD_PROJECT_ID} \
           --region ${_REGION} \
-{%- if cookiecutter.agent_runtime_identity_default != "agent_identity" %}
+{%- if not cookiecutter.agent_identity_enabled %}
           --service-account=${_APP_SERVICE_ACCOUNT_PROD} \
 {%- endif %}
           --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version=${COMMIT_SHA},LOGS_BUCKET_NAME=${_LOGS_BUCKET_NAME_PROD}"

@@ -20,10 +20,9 @@ import (
 	adkagent "google.golang.org/adk/v2/agent"
 )
 
-// appName is the name this server serves the agent under: the {app_name}
-// segment of /apps/{app_name}/..., and the single entry in /list-apps. It is
-// the agent directory, which is where agents-cli resolves that segment from.
-const appName = "{{cookiecutter.agent_directory}}"
+// appName is the {app_name} in /apps/{app_name}/... and /list-apps. It must
+// match agents-cli, which uses the basename of the agent directory.
+const appName = "{{cookiecutter.agent_package}}"
 
 // appLoader serves the root agent under appName, whatever the agent is called.
 //

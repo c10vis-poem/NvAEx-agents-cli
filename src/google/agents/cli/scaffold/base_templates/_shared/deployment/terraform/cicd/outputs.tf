@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-{% if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
+{% if not cookiecutter.agent_identity_enabled %}
 output "app_service_account_emails" {
   description = "Application service account emails by environment"
   value       = { for k, v in google_service_account.app_sa : k => v.email }

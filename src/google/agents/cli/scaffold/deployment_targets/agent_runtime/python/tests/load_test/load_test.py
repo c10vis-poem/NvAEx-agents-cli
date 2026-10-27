@@ -61,7 +61,7 @@ class ChatStreamUser(HttpUser):
         # Create session first
         user_id = f"user_{uuid.uuid4()}"
         session_response = self.client.post(
-            f"{API_PREFIX}/apps/{{cookiecutter.agent_directory}}/users/{user_id}/sessions",
+            f"{API_PREFIX}/apps/{{cookiecutter.agent_package}}/users/{user_id}/sessions",
             name="/api/apps/.../sessions",
             headers=headers,
             json={"state": {"preferred_language": "English", "visit_count": 1}},
@@ -75,7 +75,7 @@ class ChatStreamUser(HttpUser):
 
         # Send chat message
         data = {
-            "app_name": "{{cookiecutter.agent_directory}}",
+            "app_name": "{{cookiecutter.agent_package}}",
             "user_id": user_id,
             "session_id": session_id,
             "new_message": {

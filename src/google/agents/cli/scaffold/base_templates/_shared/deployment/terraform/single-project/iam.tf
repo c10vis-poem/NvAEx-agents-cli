@@ -34,7 +34,7 @@ resource "google_project_iam_member" "default_compute_sa_storage_object_creator"
   member     = "serviceAccount:${data.google_project.project.number}-compute@developer.gserviceaccount.com"
   depends_on = [resource.google_project_service.services]
 }
-{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
+{%- if not cookiecutter.agent_identity_enabled %}
 
 # Agent service account
 resource "google_service_account" "app_sa" {
@@ -74,7 +74,7 @@ resource "google_project_iam_member" "vertex_ai_sa_permissions" {
   member  = google_project_service_identity.vertex_sa.member
   depends_on = [resource.google_project_service.services]
 }
-{%- if cookiecutter.agent_runtime_identity_default == 'agent_identity' %}
+{%- if cookiecutter.agent_identity_enabled %}
 
 # An Agent Identity principal only exists once its engine does.
 resource "google_project_iam_member" "agent_identity_roles" {

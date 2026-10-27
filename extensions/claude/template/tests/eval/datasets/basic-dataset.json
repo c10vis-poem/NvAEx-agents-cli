@@ -1,0 +1,31 @@
+{
+  "eval_cases": [
+    {
+      "name": "greeting",
+      "agent_data": {
+        "turns": [
+          {
+            "events": [
+              {"author": "user", "content": {"parts": [{"text": "hello"}]}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "weather_lookup",
+      "agent_data": {
+        "turns": [
+          {
+            "events": [
+              {
+                "author": "user",
+                "content": {"parts": [{"text": "What's the weather in San Francisco?"}]}
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

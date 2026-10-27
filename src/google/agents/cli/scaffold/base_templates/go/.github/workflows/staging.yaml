@@ -141,7 +141,7 @@ jobs:
           {%- endif %}
             --project {% raw %}${{ vars.STAGING_PROJECT_ID }}{% endraw %} \
             --region {% raw %}${{ vars.REGION }}{% endraw %} \
-{%- if cookiecutter.agent_runtime_identity_default != "agent_identity" %}
+{%- if not cookiecutter.agent_identity_enabled %}
             --service-account={% raw %}${{ vars.APP_SERVICE_ACCOUNT_STAGING }}{% endraw %} \
 {%- endif %}
             --update-env-vars="OTEL_RESOURCE_ATTRIBUTES=service.version={% raw %}${{ github.sha }}{% endraw %},LOGS_BUCKET_NAME={% raw %}${{ vars.LOGS_BUCKET_NAME_STAGING }}{% endraw %}"

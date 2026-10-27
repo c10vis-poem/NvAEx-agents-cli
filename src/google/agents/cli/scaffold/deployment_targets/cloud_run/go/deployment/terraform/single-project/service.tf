@@ -83,6 +83,7 @@ resource "google_secret_manager_secret_version" "db_password" {
 
 
 resource "google_cloud_run_v2_service" "app" {
+  provider = google-beta
   name                = var.project_name
   location            = var.region
   project             = var.project_id

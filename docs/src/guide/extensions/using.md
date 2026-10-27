@@ -12,7 +12,7 @@ Extensions are how you adapt `agents-cli` to a workflow it doesn't ship with —
 
 A few things this makes possible:
 
-- **Swap the agent framework** — run the whole lifecycle (`create`, `run`, `eval`, `deploy`) on LangChain instead of ADK. See [First-party extensions](first-party.md).
+- **Swap the agent framework** — run the whole lifecycle (`create`, `run`, `eval`, `deploy`) on LangChain or the Claude Agent SDK instead of ADK. See [First-party extensions](first-party.md).
 - **Wrap a command with policy** — run a compliance or SBOM check before the built-in `deploy`.
 - **Standardize a team workflow** — commit an `agents-cli-extension.yaml` so everyone (and CI) gets the same overrides.
 

@@ -18,6 +18,7 @@ import json
 import logging
 import subprocess
 import sys
+from collections.abc import Mapping
 
 import backoff
 import click
@@ -28,12 +29,13 @@ from google.agents.cli._gcp_project import get_gcp_project_number
 from google.agents.cli._project import find_project_root
 from google.agents.cli._runner import popen_resolved, run
 from google.agents.cli.auth import get_access_token
+from google.agents.cli.deploy._cloud_validation import validate_cloud_run_deployment
 from google.agents.cli.deploy._utils import (
+    KeyValueChanges,
     MachineShape,
-    parse_kv_flag,
-    parse_secrets,
+    cloud_run_service_url,
+    parse_secret_refs,
     print_table,
-    read_project_dotenv,
     redact_command,
 )
 from google.agents.cli.scaffold.utils.language import get_project_version
@@ -81,22 +83,46 @@ def deploy_cloud_run(
     port: int | None,
     iap: bool,
     service_account: str | None,
-    env_vars: str | None,
-    secrets: str | None,
-    update_labels: dict[str, str],
-    remove_labels: list[str],
-    clear_labels: bool,
+    env_var_changes: KeyValueChanges,
+    secret_changes: KeyValueChanges,
+    label_changes: KeyValueChanges,
     no_wait: bool,
     dry_run: bool,
 ) -> None:
     """Deploy with ``gcloud run deploy``, or print the command on dry run."""
     _tools.require_tool("gcloud")
 
+    env_var_map = _cloud_run_env_vars(
+        project=project,
+        region=region,
+        service_name=service_name,
+        env_vars=env_var_changes.updates,
+    )
+    # Cloud Run merges secrets, so an empty --secrets (a clear on Agent Runtime)
+    # sends nothing.
+    secret_args = (
+        _cloud_run_secret_args(secret_changes.updates, env_var_map)
+        if secret_changes.updates
+        else []
+    )
+    dry_run_validation_report, service_exists = None, None
+    if dry_run:
+        dry_run_validation_report, service_exists = validate_cloud_run_deployment(
+            project=project,
+            region=region,
+            service_name=service_name,
+            service_account=service_account,
+            secrets=secret_changes.updates,
+            image=image,
+        )
+        creating = not service_exists
+    else:
+        creating = _is_cloud_run_create(
+            project=project, region=region, service=service_name
+        )
+
     args = _cloud_run_base_args(
         service_name=service_name, project=project, region=region, image=image
-    )
-    creating = _is_cloud_run_create(
-        dry_run=dry_run, project=project, region=region, service=service_name
     )
     args.extend(_cloud_run_shape_args(shape, creating=creating))
     args.extend(
@@ -108,24 +134,17 @@ def deploy_cloud_run(
             service_account=service_account,
         )
     )
-
-    env_var_map = _cloud_run_env_vars(
-        project=project,
-        region=region,
-        service_name=service_name,
-        env_vars=env_vars,
-    )
     args.extend(_cloud_run_env_var_args(env_var_map))
-    if secrets:
-        args.extend(_cloud_run_secret_args(secrets, env_var_map))
-    args.extend(_cloud_run_label_args(update_labels, remove_labels, clear_labels))
+    args.extend(secret_args)
+    args.extend(_cloud_run_label_args(label_changes))
 
     if no_wait:
         args.append("--async")
 
     display_cmd = redact_command(args)
-    if dry_run:
-        click.echo(f"  Would run: {display_cmd}")
+    if dry_run_validation_report is not None:
+        _print_cloud_run_plan(display_cmd, service_exists=service_exists, region=region)
+        dry_run_validation_report.raise_if_failed()
         return
     click.secho(f"  ▸ {display_cmd}", fg="cyan", dim=True)
 
@@ -260,24 +279,18 @@ def _cloud_run_base_args(
     return args
 
 
-def _is_cloud_run_create(
-    *, dry_run: bool, project: str, region: str, service: str
-) -> bool:
+def _is_cloud_run_create(*, project: str, region: str | None, service: str) -> bool:
     """True if the deploy creates the service, False if it updates an existing one.
 
     Chooses create (apply our conservative defaults) vs. update (send only the
-    flags the user set, letting gcloud preserve the rest). Dry run skips the
-    network call and treats the deploy as a create for display. Uses a REST GET
+    flags the user set, letting gcloud preserve the rest). Uses a REST GET
     (Cloud Run Admin API v2) rather than `gcloud run services describe` to avoid
     ~2s of gcloud startup and the run_v2 dependency, mirroring the REST pattern in
     publish/cmd_publish.py.
     """
-    if dry_run:
+    if not region:
         return True
-    url = (
-        f"https://{region}-run.googleapis.com/v2/projects/{project}"
-        f"/locations/{region}/services/{service}"
-    )
+    url = cloud_run_service_url(project=project, region=region, service=service)
     resp = requests.get(
         url, headers={"Authorization": f"Bearer {get_access_token()}"}, timeout=30
     )
@@ -335,12 +348,12 @@ def _cloud_run_env_vars(
     project: str,
     region: str,
     service_name: str,
-    env_vars: str | None,
+    env_vars: Mapping[str, str],
 ) -> dict[str, str]:
-    """Runtime env vars. Precedence: --env-vars > .env > defaults."""
+    """Runtime env vars: ``env_vars`` (the project .env with --env-vars on top),
+    then defaults."""
     project_root = find_project_root() or "."
-    env_var_map = read_project_dotenv(project_root)
-    env_var_map.update(parse_kv_flag("--env-vars", env_vars))
+    env_var_map = dict(env_vars)
 
     # Skip the version read (and its warning) when the user has already supplied one.
     if "AGENT_VERSION" not in env_var_map:
@@ -375,13 +388,15 @@ def _cloud_run_env_var_args(env_var_map: dict[str, str]) -> list[str]:
     return ["--update-env-vars", ",".join(f"{k}={v}" for k, v in env_var_map.items())]
 
 
-def _cloud_run_secret_args(secrets: str, env_var_map: dict[str, str]) -> list[str]:
+def _cloud_run_secret_args(
+    secrets: Mapping[str, str], env_var_map: dict[str, str]
+) -> list[str]:
     """``--update-secrets`` for ENV=SECRET[:VERSION] pairs (version defaults to latest).
 
     Uses --update-secrets (merge) to match the --update-env-vars semantics,
     rather than --set-secrets, which would drop any not listed here.
     """
-    parsed_secrets = parse_secrets(secrets)
+    parsed_secrets = parse_secret_refs(secrets)
     overlap = parsed_secrets.keys() & env_var_map.keys()
     if overlap:
         raise click.ClickException(
@@ -396,20 +411,18 @@ def _cloud_run_secret_args(secrets: str, env_var_map: dict[str, str]) -> list[st
     return ["--update-secrets", secret_str]
 
 
-def _cloud_run_label_args(
-    update_labels: dict[str, str], remove_labels: list[str], clear_labels: bool
-) -> list[str]:
+def _cloud_run_label_args(label_changes: KeyValueChanges) -> list[str]:
     """Label flags for gcloud, always re-applying the reserved ``created-by``.
 
     ``created-by`` is reserved, so a user can neither override its value via
     --labels nor drop it via --remove-labels / --clear-labels.
     """
-    if update_labels.get("created-by") not in (None, "agents-cli"):
+    if label_changes.updates.get("created-by") not in (None, "agents-cli"):
         logging.warning(
             "Ignoring --labels created-by=%s: 'created-by' is currently reserved.",
-            update_labels["created-by"],
+            label_changes.updates["created-by"],
         )
-    cr_remove_labels = list(remove_labels)
+    cr_remove_labels = list(label_changes.removals)
     if "created-by" in cr_remove_labels:
         cr_remove_labels.remove("created-by")
         logging.warning(
@@ -422,16 +435,40 @@ def _cloud_run_label_args(
     # --update-labels touch disjoint keys — a key can't be in both --labels
     # and --remove-labels — so their relative order doesn't matter.)
     args = []
-    if clear_labels:
+    if label_changes.clear:
         args.append("--clear-labels")
     elif cr_remove_labels:
         args.extend(["--remove-labels", ",".join(cr_remove_labels)])
 
-    cr_labels = {**update_labels, "created-by": "agents-cli"}
+    cr_labels = {**label_changes.updates, "created-by": "agents-cli"}
     # --update-labels merges (preserves existing labels), consistent with
     # --update-env-vars / --update-secrets; emit exactly one flag.
     args.extend(["--update-labels", ",".join(f"{k}={v}" for k, v in cr_labels.items())])
     return args
+
+
+def _print_cloud_run_plan(
+    display_cmd: str, *, service_exists: bool | None, region: str | None
+) -> None:
+    """Print the command a dry run would run, and note a guessed create."""
+    click.echo(f"  Would run: {display_cmd}")
+    if service_exists is not None:
+        return
+    if region:
+        sizing = (
+            "If the service exists, the deploy leaves out --memory, --cpu, "
+            "--min-instances, --max-instances and --concurrency, unless you set them."
+        )
+    else:
+        sizing = (
+            "With no region set, the deploy runs this command whether or not the "
+            "service exists. On an existing service, it replaces the --memory, "
+            "--cpu, --min-instances, --max-instances and --concurrency values."
+        )
+    click.echo(
+        "  The dry run could not tell if the service exists, so this plan assumes "
+        f"a new service. {sizing}"
+    )
 
 
 @backoff.on_exception(

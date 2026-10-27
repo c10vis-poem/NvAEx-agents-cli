@@ -29,6 +29,7 @@ from typing import NamedTuple
 import click
 import psutil
 
+from google.agents.cli._project import agent_package_name, agents_root
 from google.agents.cli._runner import popen_resolved_detached, redact_cmd
 from google.agents.cli._uv_index import uv_index_env
 from google.agents.cli.scaffold.utils.language import (
@@ -273,6 +274,7 @@ def _python_serve_command(
     Prefers running this project's `fast_api_app.py` under uvicorn when the
     file exists, otherwise falls back to `adk api_server`.
     """
+    root = agents_root(agent_dir)
     if _has_fast_api_app(project_root, agent_dir):
         if otel_to_cloud:
             logging.warning(
@@ -282,16 +284,18 @@ def _python_serve_command(
                 "the flag applied.",
                 agent_dir,
             )
-        return [
+        cmd = [
             "uv",
             "run",
             "uvicorn",
-            f"{agent_dir}.fast_api_app:app",
+            f"{agent_package_name(agent_dir)}.fast_api_app:app",
             "--host",
             "127.0.0.1",
             "--port",
             str(port),
         ]
+        # A nested package (src/my_agent) imports from its parent folder.
+        return [*cmd, "--app-dir", root] if root != "." else cmd
 
     cmd = [
         "uv",
@@ -307,7 +311,7 @@ def _python_serve_command(
     ]
     if otel_to_cloud:
         cmd.append("--otel_to_cloud")
-    cmd.append(".")
+    cmd.append(root)
     return cmd
 
 

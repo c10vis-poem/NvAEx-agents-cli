@@ -111,6 +111,7 @@ resource "google_secret_manager_secret_version" "db_password" {
 {%- endif %}
 
 resource "google_cloud_run_v2_service" "app" {
+  provider = google-beta
   for_each = local.deploy_project_ids
 
   name                = var.project_name

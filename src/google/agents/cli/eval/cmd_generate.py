@@ -37,6 +37,7 @@ from google.agents.cli._modes import MODE_ADK, MODE_ADK_LIVE
 from google.agents.cli._output import Console
 from google.agents.cli._project import (
     ProjectConfig,
+    agent_package_name,
     find_project_root,
     read_project_config,
     require_agent_directory,
@@ -666,7 +667,7 @@ def _run_against_local_server(
     live: bool,
 ) -> None:
     """Run inference against a local ADK server booted for this command."""
-    local_app_name = cfg.agent_directory
+    local_app_name = agent_package_name(cfg.agent_directory)
     console.print(f"[bold]Booting local ADK server (app_name={local_app_name})[/bold]")
     console.print(f"[bold]Running inference on dataset:[/bold] [cyan]{dataset}[/cyan]")
     server_info = ensure_server(

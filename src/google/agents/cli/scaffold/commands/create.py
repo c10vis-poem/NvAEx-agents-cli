@@ -20,13 +20,14 @@ import re
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 import click
 from click.core import ParameterSource
 from rich.prompt import IntPrompt, Prompt
 
+from google.agents.cli._fs import delete_folder
 from google.agents.cli._gcp_project import resolve_gcp_project
 from google.agents.cli._output import (
     INTERACTIVE_FIX,
@@ -35,14 +36,19 @@ from google.agents.cli._output import (
     configure_logging,
     programmatic_mode_error,
 )
-from google.agents.cli._project import AGENT_IDENTITY, find_project_config
+from google.agents.cli._project import (
+    AGENT_IDENTITY,
+    DEFAULT_BASE_TEMPLATE,
+    find_project_config,
+)
 from google.agents.cli._skills_check import find_parent_workspace_skills
 
-from ..utils import adk_shortcut, cli_options, remote_template, template
+from ..utils import adk_shortcut, cli_options, go_overlay, remote_template, template
 from ..utils.cli_options import InteractionMode
 from ..utils.command import run_gcloud_command
 from ..utils.copy_files import CopyOptions, copy_dir_contents
 from ..utils.gcp import verify_credentials_and_vertex
+from ..utils.language import LANGUAGE_CONFIGS
 from ..utils.logging import display_welcome_banner
 from ..utils.symlinks import find_repo_boundary
 
@@ -171,7 +177,7 @@ def _handle_create_errors(f: Callable) -> Callable:
 @click.option(
     "--agent",
     "-a",
-    help="Template identifier to use. Can be a local agent name (e.g., `chat_agent`), a local path (`local@/path/to/template`), or a remote Git URL. Both shorthand (e.g., `github.com/org/repo/path@main`) and full URLs from your browser (e.g., `https://github.com/org/repo/tree/main/path`) are supported. Lists available local templates if omitted.",
+    help="Template identifier to use. Can be a local agent name (e.g., `chat_agent`), a local path (`local@/path/to/template`), or a remote Git URL. Both shorthand (e.g., `github.com/org/repo/path@main`) and full URLs from your browser (e.g., `https://github.com/org/repo/tree/main/path`) are supported. A remote template whose `manifest.yaml` declares `language: go` renders on adk_go. Lists available local templates if omitted.",
 )
 @click.option(
     "--output-dir",
@@ -204,7 +210,7 @@ def _handle_create_errors(f: Callable) -> Callable:
 @click.option(
     "--adk",
     is_flag=True,
-    help="Quickstart mode: adk + agent_runtime + prototype, skips prompts",
+    help="Quickstart mode: adk_python + agent_runtime + prototype, skips prompts",
     default=False,
 )
 @_handle_create_errors
@@ -301,18 +307,36 @@ def create(
         project_name, destination_dir, output_dir, in_folder=in_folder, mode=mode
     )
 
-    resolved = _resolve_template(inputs, mode, project_name=location.project_name)
-    if resolved is None:
+    selection = _select_agent(
+        inputs.agent,
+        deployment_target=inputs.deployment_target,
+        interactive=mode.interactive,
+        auto_approve=mode.auto_approve,
+        locked=inputs.locked,
+        project_name=location.project_name,
+        bq_analytics=inputs.bq_analytics,
+    )
+    if selection is None:
         # A version-locked template executed a nested command; nothing more to do.
         return
+    logging.debug("Selected agent: %s", selection.final_agent)
 
-    selection, loaded = resolved
-
-    plan = _resolve_project(loaded, inputs, mode)
-
-    _render_project(
-        selection, loaded, location=location, plan=plan, inputs=inputs, mode=mode
-    )
+    try:
+        loaded = _load_template_config(
+            selection,
+            base_template=inputs.base_template,
+            cli_overrides=inputs.cli_overrides,
+        )
+        plan = _resolve_project(loaded, inputs, mode)
+        _render_project(
+            selection, loaded, location=location, plan=plan, inputs=inputs, mode=mode
+        )
+    finally:
+        if selection.temp_dir_to_clean:
+            logging.debug(
+                "Cleaning up temporary directory: %s", selection.temp_dir_to_clean
+            )
+            delete_folder(pathlib.Path(selection.temp_dir_to_clean))
 
     # Everything below is the next-steps banner. A quiet run's project lives in
     # a temp directory that is deleted moments later, so telling the user to cd
@@ -463,21 +487,35 @@ def _apply_adk_python_quickstart(
     Returns updated ``(inputs, mode)`` copies with those values applied.
     """
     console.print(
-        "⚡ ADK quickstart: adk + Agent Runtime in Gemini platform + prototype mode\n",
+        f"⚡ ADK quickstart: {DEFAULT_BASE_TEMPLATE} + Agent Runtime in Gemini platform + prototype mode\n",
         style="cyan",
     )
-    if inputs.agent and inputs.agent != "adk":
-        logging.info("--agent '%s' ignored due to --adk flag (using adk).", inputs.agent)
+    # Compare after alias resolution so `-a adk --adk` is not reported as overridden.
+    requested_agent = inputs.agent and template.AGENT_ALIASES.get(
+        inputs.agent, inputs.agent
+    )
+    if requested_agent and requested_agent != DEFAULT_BASE_TEMPLATE:
+        logging.info(
+            "--agent '%s' ignored due to --adk flag (using %s).",
+            inputs.agent,
+            DEFAULT_BASE_TEMPLATE,
+        )
     if inputs.deployment_target and inputs.deployment_target != "agent_runtime":
         logging.info(
             "--deployment-target '%s' ignored due to --adk flag (using agent_runtime).",
             inputs.deployment_target,
         )
     logging.debug(
-        "ADK quickstart mode: agent=adk, deployment_target=agent_runtime, prototype=True, auto_approve=True"
+        "ADK quickstart mode: agent=%s, deployment_target=agent_runtime, prototype=True, auto_approve=True",
+        DEFAULT_BASE_TEMPLATE,
     )
     return (
-        replace(inputs, agent="adk", deployment_target="agent_runtime", prototype=True),
+        replace(
+            inputs,
+            agent=DEFAULT_BASE_TEMPLATE,
+            deployment_target="agent_runtime",
+            prototype=True,
+        ),
         replace(mode, auto_approve=True),
     )
 
@@ -528,42 +566,6 @@ def _prepare_project_path(
             f"Project directory '{location.project_path}' already exists"
         )
     return location
-
-
-def _resolve_template(
-    inputs: CreationInputs,
-    mode: InteractionMode,
-    *,
-    project_name: str,
-) -> tuple[AgentSelection, LoadedTemplateConfig] | None:
-    """Resolve the agent selection and load its (possibly remote) template config.
-
-    Thin orchestrator over `_select_agent` (agent resolution + template fetch) and
-    `_load_template_config` (config load/merge). Returns None when a version-locked
-    template executed a nested command (the caller should return immediately);
-    otherwise returns the `(AgentSelect, LoadedTemplateConfig)` pair.
-    """
-    agent_selection = _select_agent(
-        inputs.agent,
-        deployment_target=inputs.deployment_target,
-        interactive=mode.interactive,
-        auto_approve=mode.auto_approve,
-        locked=inputs.locked,
-        project_name=project_name,
-        bq_analytics=inputs.bq_analytics,
-    )
-    if agent_selection is None:
-        # A version-locked template executed a nested command; nothing more to do.
-        return None
-    logging.debug("Selected agent: %s", agent_selection.final_agent)
-
-    loaded_template_config = _load_template_config(
-        agent_selection,
-        base_template=inputs.base_template,
-        cli_overrides=inputs.cli_overrides,
-    )
-
-    return agent_selection, loaded_template_config
 
 
 def _select_agent(
@@ -781,7 +783,7 @@ def _fetch_remote_template_source(
     locked: bool,
     project_name: str,
 ) -> remote_template.FetchedTemplate:
-    """Fetch a remote/adk-recipes template, printing progress and the ADK caveat.
+    """Fetch a remote/adk-recipes template, printing progress.
 
     Wraps ``remote_template.fetch_remote_template`` with the user-facing
     messaging shared by the CLI and interactive (browse) agent-selection paths.
@@ -792,7 +794,7 @@ def _fetch_remote_template_source(
         keeps ownership of the ``agent``-derived values (``recorded_spec`` and
         the generated ``remote_<hash>`` name), which differ per call site.
     """
-    if remote_spec.is_adk_samples:
+    if remote_spec.is_adk_recipes:
         console.print(
             f"> Fetching template: {remote_spec.template_path}",
             style="bold blue",
@@ -800,22 +802,7 @@ def _fetch_remote_template_source(
     else:
         console.print(f"Fetching remote template: {agent}")
 
-    fetched = remote_template.fetch_remote_template(
-        remote_spec, agent, locked, project_name
-    )
-
-    # Show informational message for ADK recipes with smart defaults
-    if remote_spec.is_adk_samples:
-        config = remote_template.load_remote_template_config(fetched.template_dir)
-        if not config.get("has_explicit_config", True):
-            console.print(
-                "\n[blue]ℹ️  Note: Agents CLI uses heuristics to template this ADK recipe.[/]"
-            )
-            console.print(
-                "[dim]   Agents CLI attempts to create a working codebase, but you'll need to follow the generated README for complete setup.[/]"
-            )
-
-    return fetched
+    return remote_template.fetch_remote_template(remote_spec, agent, locked, project_name)
 
 
 def _select_agent_interactively(
@@ -918,18 +905,17 @@ def display_agent_selection(
 
     console.print("\n> Please select an agent to get started:")
 
-    current_display_group = None
+    current_header = None
     for num, agent in agents.items():
-        agent_language = agent["language"]
-        display_group = agent_language if agent_language == "python" else "other"
+        lang_config = LANGUAGE_CONFIGS.get(agent["language"])
+        if lang_config:
+            header = f"{lang_config['picker_icon']} {lang_config['display_name']}"
+        else:
+            header = "🌐 Other Languages"
 
         # Print group header when transitioning to a new group
-        if display_group != current_display_group:
-            current_display_group = display_group
-            if display_group == "python":
-                header = "🐍 Python"
-            else:
-                header = "🌐 Other Languages"
+        if header != current_header:
+            current_header = header
             console.print(f"\n  [bold cyan]{header}[/]")
 
         # Align agent names for cleaner display (use display_name if available)
@@ -990,7 +976,7 @@ def display_more_options_submenu(
         result.bq_analytics = True
         return result
     elif choice == 2:
-        return display_adk_samples_selection()
+        return display_adk_recipes_selection()
     elif choice == 3:
         url = Prompt.ask("\nEnter the remote template URL")
         try:
@@ -1010,7 +996,7 @@ def display_more_options_submenu(
         raise ValueError(f"Invalid selection: {choice}")
 
 
-def display_adk_samples_selection() -> AgentSelectionResult:
+def display_adk_recipes_selection() -> AgentSelectionResult:
     """Display adk-recipes agents and prompt for selection."""
 
     console.print("\n> Fetching agents from [bold blue]google/adk-recipes[/]...")
@@ -1104,18 +1090,36 @@ def _load_template_config(
             # Validate that the base template exists
             if not template.validate_base_template(base_template):
                 available_templates = template.get_available_base_templates()
-                if selection.temp_dir_to_clean:
-                    shutil.rmtree(selection.temp_dir_to_clean, ignore_errors=True)
                 raise click.UsageError(
                     f"Base template '{base_template}' not found.\n"
                     f"Available base templates: {', '.join(available_templates)}"
                 )
             cli_overrides["base_template"] = template.resolve_agent_alias(base_template)
 
-        # Load remote template config with CLI overrides
         source_config = remote_template.load_remote_template_config(
             template_source_path, cli_overrides
         )
+        # Checked before the deployment and project prompts. A project
+        # overlaid onto itself may predate ADK Go v2 and is still enhanced.
+        if go_overlay.applies_to(
+            source_config["settings"].get("language"),
+            overlay_is_project=_overlays_itself(selection),
+        ):
+            go_overlay.check_adk_go_version(
+                template_source_path, selection.template_repo_root
+            )
+
+        if (
+            remote_spec
+            and remote_spec.is_adk_recipes
+            and not source_config.get("has_explicit_config", True)
+        ):
+            console.print(
+                "\n[blue]ℹ️  Note: Agents CLI uses heuristics to template this ADK recipe.[/]"
+            )
+            console.print(
+                "[dim]   Agents CLI attempts to create a working codebase, but you'll need to follow the generated README for complete setup.[/]"
+            )
 
         # Remote templates now work even without pyproject.toml thanks to defaults
         if source_config:
@@ -1124,6 +1128,14 @@ def _load_template_config(
         # Load base template config for inheritance
         base_template_name = remote_template.get_base_template_name(source_config)
         logging.debug("Using base template: %s", base_template_name)
+        if not template.validate_base_template(base_template_name):
+            if selection.temp_dir_to_clean:
+                shutil.rmtree(selection.temp_dir_to_clean, ignore_errors=True)
+            raise click.UsageError(
+                f"Base template '{base_template_name}' not found.\n"
+                "Available base templates: "
+                f"{', '.join(template.get_available_base_templates())}"
+            )
 
         base_template_path = (
             pathlib.Path(__file__).parent.parent
@@ -1334,9 +1346,24 @@ def _resolve_session_type(
     Non-Python agents and agents that don't require session management always
     use in-memory sessions. For Python agents that require sessions, the value
     depends on the deployment target (agent_runtime handles sessions itself);
-    session-type selection is offered only for supported agents on cloud_run/gke.
+    session-type selection is offered only for supported agents on cloud_run/gke,
+    limited to the agent's ``session_types`` setting when it has one; its first
+    entry is the default.
     """
-    requires_session = config.get("settings", {}).get("requires_session", False)
+    settings = config.get("settings", {})
+    requires_session = settings.get("requires_session", False)
+    supported = settings.get("session_types")
+    if supported is None:
+        supported = list(template.SESSION_TYPES)
+    elif (
+        not isinstance(supported, list)
+        or not supported
+        or not all(isinstance(s, str) and s in template.SESSION_TYPES for s in supported)
+    ):
+        raise click.ClickException(
+            f"The template's settings.session_types ({supported!r}) must be a non-empty "
+            f"list of session types from: {', '.join(template.SESSION_TYPES)}."
+        )
 
     if not requires_session:
         # Agents that don't manage sessions always use in-memory sessions.
@@ -1354,17 +1381,23 @@ def _resolve_session_type(
             )
             return "none"
     elif final_deployment in ("cloud_run", "gke"):
+        if session_type and session_type not in supported:
+            raise click.UsageError(
+                f"--session-type {session_type} is not supported by this agent. "
+                f"Valid options: {', '.join(supported)}."
+            )
         if session_type:
             return session_type
 
         if mode.interactive:
-            return template.prompt_session_type_selection()
+            return template.prompt_session_type_selection(choices=supported)
 
         if mode.auto_approve and not mode.quiet:
             logging.info(
-                "--session-type not specified. Defaulting to 'in_memory' in auto-approve mode."
+                "--session-type not specified. Defaulting to '%s' in auto-approve mode.",
+                supported[0],
             )
-        return "in_memory"
+        return supported[0]
 
     if session_type and session_type != "in_memory":
         logging.warning(
@@ -1670,8 +1703,8 @@ def _render_project(
     """Render the resolved template into the destination and finalize the project.
 
     Processes the template (local or remote), rewrites the region when it differs
-    from the default, re-adds the base template's inherited dependencies for
-    remote templates, and always cleans up any temporary source directory.
+    from the default, and re-adds the base template's inherited dependencies for
+    remote templates.
     """
     destination_dir = location.destination_dir
 
@@ -1695,13 +1728,9 @@ def _render_project(
             final_cli_overrides["settings"] = {}
         final_cli_overrides["settings"]["agent_directory"] = inputs.agent_directory
 
-    # `local@.` overlays the current directory onto itself, so the manifest in
-    # the overlay is this project's own and has to survive the copy. Every other
-    # source is a template, whose manifest describes the template.
-    overlay_is_project = (
-        isinstance(selection.agent, str)
-        and selection.agent.strip().rstrip("/") == "local@."
-    )
+    # Only a project overlaid onto itself keeps its manifest; a template's
+    # manifest describes the template.
+    overlay_is_project = _overlays_itself(selection)
 
     # An in-folder render must not rename the project's agent. The name is
     # recorded in the manifest and baked into the agent source, so re-deriving
@@ -1709,14 +1738,21 @@ def _render_project(
     existing_config = find_project_config(destination_dir) if location.in_folder else None
     recorded_root_agent_name = existing_config.root_agent_name if existing_config else ""
 
+    # Enhancing a project agents-cli did not create (no manifest) with another
+    # template: the files already there are the user's, so the ones the render
+    # replaces are moved aside. A project with a manifest, or `local@.`, is
+    # re-rendered in place.
+    keep_existing_files = (
+        location.in_folder and not overlay_is_project and existing_config is None
+    )
+
     try:
         # The project records the spec it was fetched from, so enhance and
-        # upgrade can fetch it again.
-        recorded_base_template = (
-            selection.recorded_spec if not location.in_folder else None
-        )
+        # upgrade can fetch it again. `local@.` names the project itself, not a
+        # template that can be fetched.
+        recorded_base_template = None if overlay_is_project else selection.recorded_spec
         # Process template (handles both local and remote templates)
-        template.process_template(
+        rendered_files = template.process_template(
             agent_name=selection.final_agent,
             template_dir=template_path,
             project_name=location.project_name,
@@ -1729,6 +1765,7 @@ def _render_project(
             template_repo_root=selection.template_repo_root,
             in_folder=location.in_folder,
             overlay_is_project=overlay_is_project,
+            keep_existing_files=keep_existing_files,
             recorded_base_template=recorded_base_template,
             cli_overrides=final_cli_overrides,
             agent_garden=inputs.agent_garden,
@@ -1741,9 +1778,10 @@ def _render_project(
             root_agent_name=inputs.root_agent_name or recorded_root_agent_name,
         )
 
-        # Replace region in all files if a different region was specified
+        # Replace the region if a different one was specified, only in the
+        # rendered files when the rest of the project is the user's.
         if plan.region != "us-east1":
-            replace_region_in_files(location.project_path, plan.region)
+            replace_region_in_files(location.project_path, plan.region, rendered_files)
 
         # Remote templates inherit base-template files (app_utils/a2a.py,
         # fast_api_app.py, the integration e2e tests) that import packages the
@@ -1753,8 +1791,6 @@ def _render_project(
         # `import a2a`) resolves. Skip with --skip-deps (reusing a saved config).
         if loaded.remote_config and not inputs.skip_deps:
             if loaded.base_template_name is None:
-                # This should never happen as _resolve_template sets
-                # both remote_config and base_template_name
                 raise RuntimeError("remote_config set without a base template")
             base_template_path = template.get_template_path(loaded.base_template_name)
             base_config = template.load_template_config(base_template_path)
@@ -1769,33 +1805,39 @@ def _render_project(
                     interactive=mode.interactive,
                 )
 
+            # The merged go.mod has to be tidy for the image's read-only build.
+            if go_overlay.applies_to(
+                (loaded.config.get("settings") or {}).get("language"),
+                overlay_is_project=overlay_is_project,
+            ):
+                go_overlay.tidy(location.project_path)
+
     except ValueError as e:
         # process_template raises ValueError for input the user can fix, so it
         # gets one line. Any other exception is our bug and keeps its traceback.
         raise click.ClickException(str(e)) from e
 
-    finally:
-        # Clean up the temporary directory if one was created
-        if selection.temp_dir_to_clean:
-            try:
-                shutil.rmtree(selection.temp_dir_to_clean)
-                logging.debug(
-                    "Successfully cleaned up temporary directory: %s",
-                    selection.temp_dir_to_clean,
-                )
-            except OSError as e:
-                logging.warning(
-                    f"Failed to clean up temporary directory {selection.temp_dir_to_clean}: {e}"
-                )
+
+def _overlays_itself(selection: AgentSelection) -> bool:
+    return (
+        isinstance(selection.agent, str)
+        and selection.agent.strip().rstrip("/") == "local@."
+    )
 
 
-def replace_region_in_files(project_path: pathlib.Path, new_region: str) -> None:
+def replace_region_in_files(
+    project_path: pathlib.Path,
+    new_region: str,
+    files: Sequence[pathlib.Path] | None,
+) -> None:
     """Replace all instances of 'us-east1' with the specified region in project files.
     Also handles agent_platform_search region mapping.
 
     Args:
         project_path: Path to the project directory
         new_region: The new region to use
+        files: Paths relative to project_path to limit the replacement to, or
+            None for every file in the project
     """
     logging.debug("Replacing region 'us-east1' with '%s' in %s", new_region, project_path)
 
@@ -1813,7 +1855,10 @@ def replace_region_in_files(project_path: pathlib.Path, new_region: str) -> None
     # Skip directories that shouldn't be modified
     skip_dirs = {".git", "__pycache__", "venv", ".venv", "node_modules"}
 
-    for file_path in project_path.rglob("*"):
+    paths = (
+        project_path.rglob("*") if files is None else (project_path / f for f in files)
+    )
+    for file_path in paths:
         # Skip directories and files with unwanted extensions
         if (
             file_path.is_dir()

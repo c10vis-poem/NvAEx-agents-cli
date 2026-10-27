@@ -126,7 +126,7 @@ The single-agent body works while the problem is small. Real production agents g
 
 Splitting helps for three reasons that show up in eval, deploy, and observe: smaller prompts make each agent more reliable, separate tool surfaces let you apply per-agent guardrails, and the trace tells you exactly which sub-agent took the bad turn.
 
-When the team needs to span processes — or call agents your team doesn't own — use the **[A2A protocol](https://a2a-protocol.org/)** as the wire format. A2A is built into every ADK agent, so just scaffold normally (`--agent adk`): any A2A-compatible agent (built with Agents CLI or not) can call yours, and yours can call theirs.
+When the team needs to span processes — or call agents your team doesn't own — use the **[A2A protocol](https://a2a-protocol.org/)** as the wire format. A2A is built into every ADK agent, so just scaffold normally (`--agent adk_python`): any A2A-compatible agent (built with Agents CLI or not) can call yours, and yours can call theirs.
 
 ### 4 · Evaluate
 
@@ -199,7 +199,7 @@ See [Observability](observability/index.md) for the full setup.
     Your coding agent will:
 
     1. Write a `.agents-cli-spec.md` describing the tools and constraints
-    2. Run `agents-cli scaffold create … --agent adk --deployment-target agent_runtime` (RAG is a clone-and-study recipe — adapt a RAG sample; see [Extending the starter agent](development.md#extending-the-starter-agent))
+    2. Run `agents-cli scaffold create … --agent adk_python --deployment-target agent_runtime` (RAG is a clone-and-study recipe — adapt a RAG recipe; see [Extending the starter agent](development.md#extending-the-starter-agent))
     3. Author the agent body and tools
     4. Write dataset cases
     5. Run `agents-cli eval run` and iterate until the score crosses threshold
@@ -213,7 +213,7 @@ See [Observability](observability/index.md) for the full setup.
     ```bash
     # Phase 1: scaffold
     agents-cli scaffold create outage-recovery-bot \
-      --agent adk \
+      --agent adk_python \
       --deployment-target agent_runtime \
       --cicd-runner github_actions \
       --bq-analytics

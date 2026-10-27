@@ -24,7 +24,7 @@ locals {
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "aiplatform.googleapis.com",
-{%- if cookiecutter.language == "python" %}
+{%- if cookiecutter.supports_bq_analytics %}
     "bigquery.googleapis.com",
 {%- endif %}
     "cloudtrace.googleapis.com",
@@ -45,7 +45,7 @@ locals {
     "container.googleapis.com",
 {%- endif %}
     "iam.googleapis.com",
-{%- if cookiecutter.language == "python" %}
+{%- if cookiecutter.supports_bq_analytics %}
     "bigquery.googleapis.com",
 {%- endif %}
     "logging.googleapis.com",

@@ -447,7 +447,7 @@
       const c = state;
       const lines = [
         "agents-cli scaffold create outage-recovery-bot \\",
-        "  --agent adk \\",
+        "  --agent adk_python \\",
       ];
       lines.push("  --deployment-target " + c.target + " \\");
       if (c.session !== "in_memory") lines.push("  --session-type " + c.session + " \\");

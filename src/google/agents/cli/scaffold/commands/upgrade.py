@@ -42,6 +42,7 @@ from ..utils.merge import (
     run_create_command,
     run_three_way_merge,
 )
+from ..utils.template import resolve_agent_alias
 from ..utils.upgrade import (
     FILE_CATEGORIES,
     UNION_DEPENDENCY_HANDLERS,
@@ -160,11 +161,11 @@ def _run_force_upgrade(
     dry_run: bool,
     interactive: bool,
     backup_hook: Callable[[pathlib.Path], bool],
-    migrated_base_template: str | None,
+    recorded_base_template: str | None,
 ) -> None:
     """Overwrite scaffolding from the new template instead of merging it.
 
-    ``migrated_base_template`` is a resolved ``adk@<name>`` URL to record.
+    ``recorded_base_template`` is the base template name to write to the manifest.
     """
     with tempfile.TemporaryDirectory(prefix="acli_upgrade_overwrite_") as temp_base:
         output_dir = pathlib.Path(temp_base)
@@ -250,7 +251,7 @@ def _run_force_upgrade(
             project_dir,
             {},
             acli_version=new_version,
-            base_template=migrated_base_template,
+            base_template=recorded_base_template,
         )
 
         if wrote_dependencies:
@@ -382,6 +383,11 @@ def upgrade(
     )
     if migrated_base_template:
         metadata.base_template = migrated_base_template
+    # Once applied, the manifest records the canonical name (adk -> adk_python).
+    # metadata keeps the recorded name: the old CLI replayed by the merge needs it.
+    recorded_base_template = migrated_base_template or resolve_agent_alias(
+        metadata.base_template
+    )
 
     # Get project name and CLI args from metadata
     project_name = metadata.project_name or project_dir.name
@@ -403,7 +409,7 @@ def upgrade(
             proj_dir,
             {},
             acli_version=new_version,
-            base_template=migrated_base_template,
+            base_template=recorded_base_template,
         )
 
     # Migrate before the merge so a customized evalset isn't clobbered by the
@@ -422,7 +428,7 @@ def upgrade(
             dry_run=dry_run,
             interactive=interactive,
             backup_hook=backup_hook,
-            migrated_base_template=migrated_base_template,
+            recorded_base_template=recorded_base_template,
         )
         return
 

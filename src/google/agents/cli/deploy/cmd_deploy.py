@@ -16,6 +16,8 @@
 
 import logging
 import os
+from dataclasses import replace
+from pathlib import Path
 
 import click
 from click.core import ParameterSource
@@ -37,9 +39,11 @@ from google.agents.cli.deploy._utils import (
     DEFAULT_MAX_INSTANCES,
     DEFAULT_MEMORY,
     DEFAULT_MIN_INSTANCES,
+    KeyValueChanges,
     MachineShape,
     parse_kv_flag,
     parse_list_flag,
+    read_project_dotenv,
     resolve_service_name,
     validate_deployment_region,
 )
@@ -149,7 +153,7 @@ _TARGET_ONLY_FLAGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 @click.option(
     "--secrets",
     "--update-secrets",
-    "secrets",
+    "update_secrets",
     default=None,
     help="Comma-separated ENV=SECRET or ENV=SECRET:VERSION pairs "
     "(Agent Runtime, Cloud Run).",
@@ -158,7 +162,8 @@ _TARGET_ONLY_FLAGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     "--agent-identity/--no-agent-identity",
     default=None,
     help="Enable or disable Agent Identity. Passing neither leaves an existing "
-    "agent's identity untouched (on update) or disables Agent Identity (on create).",
+    "agent's identity untouched (on update) or follows the project's identity "
+    "default in agents-cli-manifest.yaml (on create).",
 )
 @click.option(
     "--env-vars",
@@ -286,8 +291,8 @@ _TARGET_ONLY_FLAGS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     "-n",
     is_flag=True,
     default=False,
-    help="Print what would be executed without running it. For Agent Runtime, "
-    "also run read-only Google Cloud checks.",
+    help="Print what would be executed without running it. For Agent Runtime "
+    "and Cloud Run, also run read-only Google Cloud checks.",
 )
 @click.option(
     "--list",
@@ -389,7 +394,7 @@ def cmd_deploy(
     project: str | None,
     region: str | None,
     deployment_target: str | None,
-    secrets: str | None,
+    update_secrets: str | None,
     agent_identity: bool | None,
     env_vars: str | None,
     iap: bool,
@@ -489,26 +494,19 @@ def cmd_deploy(
     _validate_flags_for_target(cfg.deployment_target, _passed_flags(ctx))
     framework = cfg.framework if framework is None else framework
 
-    parsed_update_labels = parse_kv_flag("--labels", update_labels)
-    parsed_remove_labels = parse_list_flag("--remove-labels", remove_labels)
-
-    # --clear-labels already removes every key, so naming keys to remove on top
-    # of it is contradictory; gcloud rejects the pair too. (--clear-labels with
-    # --labels is fine: the clear is applied first, as in gcloud.)
-    if clear_labels and parsed_remove_labels:
-        raise click.ClickException(
-            "--clear-labels already removes every label, so it can't be combined "
-            "with --remove-labels. Drop --remove-labels."
-        )
-
-    # A key can't be both added and removed in the same deploy.
-    label_conflicts = parsed_update_labels.keys() & set(parsed_remove_labels)
-    if label_conflicts:
-        raise click.ClickException(
-            f"{', '.join(sorted(label_conflicts))} appear(s) in both --labels / "
-            "--update-labels and --remove-labels. A label can't be added and "
-            "removed in the same deploy."
-        )
+    label_changes = _parse_key_value_flags(
+        "labels", update_labels, remove_labels, clear_labels
+    )
+    # There is no --remove-secrets / --clear-secrets yet. An explicitly empty
+    # --secrets has always cleared an Agent Runtime agent's secrets, so it is the
+    # clear for now.
+    secret_changes = _parse_key_value_flags(
+        "secrets", update_secrets, removals=None, clear=update_secrets == ""
+    )
+    # There is no --remove-env-vars / --clear-env-vars yet.
+    env_var_changes = _merge_dotenv(
+        _parse_key_value_flags("env-vars", env_vars, removals=None, clear=False)
+    )
 
     # Prompt only once every flag is known to be valid, so a bad flag never
     # costs the user a confirmation.
@@ -517,12 +515,12 @@ def cmd_deploy(
 
     if cfg.deployment_target == _AGENT_RUNTIME:
         if dry_run:
-            validate_agent_runtime_deployment(
+            report = validate_agent_runtime_deployment(
                 project=project,
                 region=region,
                 display_name=service_name,
                 service_account=service_account,
-                secrets=secrets,
+                secrets=secret_changes.updates,
                 update_only=update_only,
                 agent_identity=agent_identity,
                 identity_type_default=cfg.agent_runtime_identity_default,
@@ -536,21 +534,18 @@ def cmd_deploy(
                 agent_gateway_egress=agent_gateway_egress,
                 agent_gateway_ingress=agent_gateway_ingress,
                 kms_key=key,
-                update_labels=parsed_update_labels,
-                remove_labels=parsed_remove_labels,
-                clear_labels=clear_labels,
+                label_changes=label_changes,
             )
+            report.raise_if_failed()
             return
         deploy_agent_runtime(
             cfg=cfg,
             project=project,
             location=region,
             display_name=service_name,
-            env_vars=env_vars,
-            set_secrets=secrets,
-            update_labels=parsed_update_labels,
-            remove_labels=parsed_remove_labels,
-            clear_labels=clear_labels,
+            env_var_changes=env_var_changes,
+            secret_changes=secret_changes,
+            label_changes=label_changes,
             service_account=service_account,
             agent_identity=agent_identity,
             no_wait=no_wait,
@@ -581,11 +576,9 @@ def cmd_deploy(
             port=port,
             iap=iap,
             service_account=service_account,
-            env_vars=env_vars,
-            secrets=secrets,
-            update_labels=parsed_update_labels,
-            remove_labels=parsed_remove_labels,
-            clear_labels=clear_labels,
+            env_var_changes=env_var_changes,
+            secret_changes=secret_changes,
+            label_changes=label_changes,
             no_wait=no_wait,
             dry_run=dry_run,
         )
@@ -596,7 +589,7 @@ def cmd_deploy(
             region=region,
             image=image,
             cluster_name=cluster_name,
-            env_vars=env_vars,
+            env_var_changes=env_var_changes,
             dry_run=dry_run,
             service_name=service_name,
             session_type=cfg.session_type,
@@ -800,3 +793,43 @@ def _unsupported_flags_message(
         f"(current target: {deployment_target})."
     )
     return f"{message}\n  {hint}" if hint else message
+
+
+def _parse_key_value_flags(
+    name: str, updates: str | None, removals: str | None, clear: bool
+) -> KeyValueChanges:
+    """Parse the --<name> / --update-<name>, --remove-<name> and --clear-<name> flags.
+
+    Rejects a clear with removals, and a key both updated and removed.
+    """
+    # Click doesn't say which spelling was typed, so errors name both.
+    update_flags, remove_flag, clear_flag = (
+        f"--{name} / --update-{name}",
+        f"--remove-{name}",
+        f"--clear-{name}",
+    )
+    changes = KeyValueChanges(
+        updates=parse_kv_flag(update_flags, updates),
+        removals=tuple(parse_list_flag(remove_flag, removals)),
+        clear=clear,
+    )
+    # A clear already removes every key, so naming keys to remove on top of it
+    # is contradictory. (A clear with updates is fine: the clear is applied first.)
+    if changes.clear and changes.removals:
+        raise click.ClickException(
+            f"{clear_flag} already removes all {name.replace('-', ' ')}, so it "
+            f"can't be combined with {remove_flag}. Drop {remove_flag}."
+        )
+    conflicts = changes.updates.keys() & set(changes.removals)
+    if conflicts:
+        raise click.ClickException(
+            f"{', '.join(sorted(conflicts))} appear(s) in both {update_flags} and "
+            f"{remove_flag}. A key can't be added and removed in the same deploy."
+        )
+    return changes
+
+
+def _merge_dotenv(env_var_changes: KeyValueChanges) -> KeyValueChanges:
+    """Put the project .env under the --env-vars updates, as every target deploys it."""
+    dotenv = read_project_dotenv(find_project_root() or Path.cwd())
+    return replace(env_var_changes, updates={**dotenv, **env_var_changes.updates})

@@ -41,6 +41,7 @@ STANDARD_IGNORE_PATTERNS = frozenset(
         ".idea",
         "*.egg-info",
         ".mypy_cache",
+        ".ruff_cache",
         ".ty",
         ".coverage",
         "htmlcov",

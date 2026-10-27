@@ -695,7 +695,7 @@ def _find_existing_agent(
     params = {"pageSize": 100}
     while True:
         resp = requests.get(list_url, headers=headers, params=params, timeout=30)
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         data = resp.json()
         existing = next((a for a in data.get("agents", []) if match(a)), None)
         if existing or not data.get("nextPageToken"):
@@ -723,29 +723,31 @@ def _upsert_agent(
     """
     existing_agent = _find_existing_agent(list_url=list_url, headers=headers, match=match)
 
-    try:
-        if existing_agent:
-            update_url = f"{base_endpoint}/v1alpha/{existing_agent['name']}"
-            console.print(f"  Updating existing agent: {existing_agent['name']}")
-            response = requests.patch(
-                update_url, headers=headers, json=payload, timeout=30
-            )
-            action = "updated"
-        else:
-            console.print("  No matching agent found; creating a new registration.")
-            response = requests.post(list_url, headers=headers, json=payload, timeout=30)
-            action = "created"
-        response.raise_for_status()
-    except requests.exceptions.HTTPError as err:
-        # Fold the API response body into the error so the ClickException raised by
-        # the caller surfaces it; the caller logs it once (avoids log-and-throw).
-        body = err.response.text if err.response is not None else ""
-        raise requests.exceptions.HTTPError(f"{err}\n   Response: {body}") from err
+    if existing_agent:
+        update_url = f"{base_endpoint}/v1alpha/{existing_agent['name']}"
+        console.print(f"  Updating existing agent: {existing_agent['name']}")
+        response = requests.patch(update_url, headers=headers, json=payload, timeout=30)
+        action = "updated"
+    else:
+        console.print("  No matching agent found; creating a new registration.")
+        response = requests.post(list_url, headers=headers, json=payload, timeout=30)
+        action = "created"
+    _raise_for_status_with_body(response)
 
     result = response.json()
     console.print(f"\n✅ Successfully {action} agent registration!")
     console.print(f"   Agent Name:\n   {result.get('name', 'N/A')}")
     return result, action
+
+
+def _raise_for_status_with_body(response: requests.Response) -> None:
+    """``raise_for_status()``, keeping the API's error body in the message."""
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as err:
+        raise requests.exceptions.HTTPError(
+            f"{err}\n   Response: {response.text}", response=response
+        ) from err
 
 
 def register_a2a_agent(

@@ -44,10 +44,13 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "http://127.0.0.1:8000"
 RUN_SSE_URL = BASE_URL + "/run_sse"
-A2A_RPC_URL = BASE_URL + "/a2a/{{cookiecutter.agent_directory}}/"
+A2A_RPC_URL = BASE_URL + "/a2a/{{cookiecutter.agent_package}}/"
 AGENT_CARD_URL = A2A_RPC_URL + ".well-known/agent-card.json"
 
 HEADERS = {"Content-Type": "application/json"}
+# Streaming runs make several model calls (and tool calls such as web search);
+# the read timeout must cover the longest gap between streamed events.
+STREAM_TIMEOUT = 120
 
 
 def log_output(pipe: Any, log_func: Any) -> None:
@@ -62,7 +65,7 @@ def start_server() -> subprocess.Popen[str]:
         sys.executable,
         "-m",
         "uvicorn",
-        "{{cookiecutter.agent_directory}}.fast_api_app:app",
+        "{{cookiecutter.agent_package}}.fast_api_app:app",
         "--host",
         "0.0.0.0",
         "--port",
@@ -134,7 +137,7 @@ def test_adk_run_sse(server_fixture: subprocess.Popen[str]) -> None:
     session_data = {"state": {"preferred_language": "English", "visit_count": 1}}
 
     session_response = requests.post(
-        f"{BASE_URL}/apps/{{cookiecutter.agent_directory}}/users/{user_id}/sessions",
+        f"{BASE_URL}/apps/{{cookiecutter.agent_package}}/users/{user_id}/sessions",
         headers=HEADERS,
         json=session_data,
         timeout=60,
@@ -143,14 +146,14 @@ def test_adk_run_sse(server_fixture: subprocess.Popen[str]) -> None:
     session_id = session_response.json()["id"]
 
     data = {
-        "app_name": "{{cookiecutter.agent_directory}}",
+        "app_name": "{{cookiecutter.agent_package}}",
         "user_id": user_id,
         "session_id": session_id,
         "new_message": {"role": "user", "parts": [{"text": "Hi!"}]},
         "streaming": True,
     }
     response = requests.post(
-        RUN_SSE_URL, headers=HEADERS, json=data, stream=True, timeout=60
+        RUN_SSE_URL, headers=HEADERS, json=data, stream=True, timeout=STREAM_TIMEOUT
     )
     assert response.status_code == 200
 
@@ -178,7 +181,7 @@ def test_a2a_chat_stream(server_fixture: subprocess.Popen[str]) -> None:
     async def _stream() -> list[StreamResponse]:
         config = ClientConfig(
             streaming=True,
-            httpx_client=httpx.AsyncClient(timeout=60.0),
+            httpx_client=httpx.AsyncClient(timeout=STREAM_TIMEOUT),
         )
         client = await create_client(A2A_RPC_URL.rstrip("/"), config)
         message = Message(
@@ -251,7 +254,7 @@ def test_reasoning_engine_stream(server_fixture: subprocess.Popen[str]) -> None:
             "input": {"user_id": f"u-{uuid.uuid4()}", "message": "Hi!"},
         },
         stream=True,
-        timeout=60,
+        timeout=STREAM_TIMEOUT,
     )
     assert response.status_code == 200
 
@@ -275,7 +278,7 @@ def test_reasoning_engine_sync_stream(server_fixture: subprocess.Popen[str]) -> 
             "input": {"user_id": f"u-{uuid.uuid4()}", "message": "Hi!"},
         },
         stream=True,
-        timeout=60,
+        timeout=STREAM_TIMEOUT,
     )
     assert response.status_code == 200
 

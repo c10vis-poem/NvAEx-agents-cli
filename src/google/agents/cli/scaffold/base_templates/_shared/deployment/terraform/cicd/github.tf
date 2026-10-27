@@ -97,7 +97,7 @@ resource "github_actions_variable" "cicd_project_id" {
   value         = var.cicd_runner_project_id
   depends_on    = [github_repository.repo, data.github_repository.existing_repo]
 }
-{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
+{%- if not cookiecutter.agent_identity_enabled %}
 
 resource "github_actions_variable" "app_sa_email_staging" {
   repository    = var.repository_name

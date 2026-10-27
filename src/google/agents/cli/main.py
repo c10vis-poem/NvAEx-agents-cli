@@ -371,7 +371,7 @@ def main():
     Quick start:
       agents-cli setup                 Install skills to your coding agent
       agents-cli create my-agent -i    Create a new agent project interactively
-      agents-cli create my-agent -y    Create with defaults (adk, agent_runtime)
+      agents-cli create my-agent -y    Create with defaults (adk_python, agent_runtime)
       agents-cli playground            Start the local playground
       agents-cli eval run              Run agent inference and grade the traces
       agents-cli scaffold enhance .    Add deployment/CI-CD to a project

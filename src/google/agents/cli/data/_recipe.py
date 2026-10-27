@@ -14,16 +14,16 @@
 
 """Shared redirect message for the removed RAG datastore/ingestion commands."""
 
-# RAG moved out of the built-in templates into clone-and-study samples. Datastore
-# provisioning and data ingestion now live in each sample's own Makefile, so these
-# CLI commands are tombstoned with an actionable pointer to the samples.
+# RAG moved out of the built-in templates into clone-and-study recipes. Datastore
+# provisioning and data ingestion now live in each recipe's own Makefile, so these
+# CLI commands are tombstoned with an actionable pointer to the recipes.
 RAG_RECIPE_MESSAGE = (
     "RAG is now a clone-and-study recipe — this command has been removed.\n\n"
-    "Datastore provisioning and data ingestion live in each sample's own Makefile\n"
+    "Datastore provisioning and data ingestion live in each recipe's own Makefile\n"
     "(e.g. `make setup-infra`, `make data-ingestion`). Start from one of:\n"
     "  - rag-vector-search  Vector Search in Gemini platform + KFP ingestion pipeline\n"
     "  - rag-agent-search   Search in Gemini platform + managed GCS data connector\n"
-    "under core/ in https://github.com/google/adk-samples\n\n"
-    "See the agents-cli workflow skill (Phase 1: Study Reference Samples) for the\n"
+    "under core/ in https://github.com/google/adk-recipes\n\n"
+    "See the agents-cli workflow skill (Phase 1: Study Reference Recipes) for the\n"
     "clone-and-study steps."
 )

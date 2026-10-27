@@ -133,6 +133,9 @@ dmypy.json
 # ty (Astral's type checker)
 .ty/
 
+# ruff ignores its cache for git, but .gcloudignore includes only this file.
+.ruff_cache/
+
 # Pyre type checker
 .pyre/
 
@@ -212,3 +215,6 @@ tools/a2a-inspector/
 *.pem
 *-key.json
 credentials*.json
+
+# Files `scaffold enhance` moved aside from a repo it adopted.
+/.agents-cli-original/

@@ -29,6 +29,9 @@ from typing import Any
 
 import click
 
+from google.agents.cli._experiments import resolve_experiment
+from google.agents.cli._project import agent_package_name
+
 
 def _read_python_version(root: pathlib.Path) -> str:
     """Return the ``[project].version`` from ``pyproject.toml`` or raise."""
@@ -55,49 +58,113 @@ LANGUAGE_CONFIGS: dict[str, dict[str, Any]] = {
         "lock_command": ["uv", "lock"],
         "lock_command_name": "uv lock",
         "display_name": "Python",
+        # Header icon in the `create` agent picker.
+        "picker_icon": "🐍",
         "agent_file": "agent.py",
         "agent_variable": "root_agent",
         "agent_in_subdirectory": False,
         "version_reader": _read_python_version,
         "api_base_path": "",
-        "a2a_base_path_factory": lambda app_name: f"/a2a/{app_name}",
+        "a2a_base_path_factory": lambda agent_directory: (
+            f"/a2a/{agent_package_name(agent_directory)}"
+        ),
+        "default_agent_directory": "app",
+        # Content capture off. The new OTel GenAI semconv reads this variable as
+        # an enum (NO_CONTENT); the old one, still used by ADK Go, reads a boolean.
+        "otel_capture_message_content_default": "NO_CONTENT",
+        # Suffix of the bundled template names (adk_go, ...); None = no suffix.
+        "base_template_suffix": None,
+        # Experiment that lists this language's templates; None = always listed.
+        "experiment": None,
+        # Env var that selects the Gemini platform backend in this language's
+        # google-genai SDK. google-genai >= 1.74.0 (Python) reads the new name;
+        # the other SDKs still read GOOGLE_GENAI_USE_VERTEXAI.
+        "genai_backend_env_var": "GOOGLE_GENAI_USE_ENTERPRISE",
+        # Whether the template ships the BigQuery Agent Analytics plugin. Also
+        # decides whether the CI/CD Terraform enables the BigQuery API.
+        "supports_bq_analytics": True,
+        # Files, besides the agent directory and deployment/, whose changes run
+        # the Cloud Build CI/CD triggers.
+        "ci_trigger_files": ["uv.lock", "tests/**"],
+        # GKE container preStop command.
+        "gke_prestop_command": ["sleep", "10"],
+        # Agent template folders copied on top of the base template, besides
+        # the agent directory and the shared folders (tests, deployment, ...).
+        "extra_template_folders": [],
+        # Whether the project uses a JVM package (java_package cookiecutter vars).
+        "jvm_package_layout": False,
     },
     "go": {
         "lock_file": "go.sum",
         "lock_command": ["go", "mod", "tidy"],
         "lock_command_name": "go mod tidy",
         "display_name": "Go",
+        "picker_icon": "🐹",
         "agent_file": "agent.go",
         "agent_variable": "RootAgent",
         "agent_in_subdirectory": False,
         "version_reader": None,
         "api_base_path": "",
-        "a2a_base_path_factory": lambda _app_name: "",
+        "a2a_base_path_factory": lambda _agent_directory: "",
+        "default_agent_directory": "app",
+        "otel_capture_message_content_default": "false",
+        "base_template_suffix": "_go",
+        "experiment": None,
+        "genai_backend_env_var": "GOOGLE_GENAI_USE_VERTEXAI",
+        "supports_bq_analytics": False,
+        "ci_trigger_files": ["e2e/**", "go.mod", "go.sum"],
+        # The distroless runtime image has no `sleep` or shell, and the typed
+        # kubernetes provider can't express a native preStop.sleep, so the
+        # app binary's own `sleep` subcommand is invoked (see main.go).
+        "gke_prestop_command": ["/agent", "sleep", "10"],
+        "extra_template_folders": [],
+        "jvm_package_layout": False,
     },
     "java": {
         "lock_file": None,  # Maven doesn't have a separate lock file
         "lock_command": ["mvn", "dependency:resolve"],
         "lock_command_name": "mvn dependency:resolve",
         "display_name": "Java",
+        "picker_icon": "☕",
         "agent_file": "Agent.java",
-        "agent_file_pattern": "**/Agent.java",
         "agent_variable": "ROOT_AGENT",
         "agent_in_subdirectory": True,  # Java uses package subdirectories
         "version_reader": None,
         "api_base_path": "",
         "a2a_base_path_factory": None,
+        "default_agent_directory": "src/main/java",
+        "otel_capture_message_content_default": "NO_CONTENT",
+        "base_template_suffix": "_java",
+        "experiment": "adk_java",
+        "genai_backend_env_var": "GOOGLE_GENAI_USE_VERTEXAI",
+        "supports_bq_analytics": False,
+        "ci_trigger_files": [],
+        "gke_prestop_command": ["sleep", "10"],
+        "extra_template_folders": ["src/test"],
+        "jvm_package_layout": True,
     },
     "typescript": {
         "lock_file": "package-lock.json",
         "lock_command": ["npm", "install", "--package-lock-only"],
         "lock_command_name": "npm install --package-lock-only",
         "display_name": "TypeScript",
+        "picker_icon": "🔷",
         "agent_file": "agent.ts",
         "agent_variable": "rootAgent",
         "agent_in_subdirectory": False,
         "version_reader": None,
         "api_base_path": "",
         "a2a_base_path_factory": None,
+        "default_agent_directory": "app",
+        "otel_capture_message_content_default": "NO_CONTENT",
+        "base_template_suffix": "_ts",
+        "experiment": "adk_typescript",
+        "genai_backend_env_var": "GOOGLE_GENAI_USE_VERTEXAI",
+        "supports_bq_analytics": False,
+        "ci_trigger_files": [],
+        "gke_prestop_command": ["sleep", "10"],
+        "extra_template_folders": [],
+        "jvm_package_layout": False,
     },
 }
 
@@ -112,6 +179,16 @@ def get_language_config(language: str) -> dict[str, Any]:
         The language configuration dict, or Python config as fallback
     """
     return LANGUAGE_CONFIGS.get(language, LANGUAGE_CONFIGS["python"])
+
+
+def is_language_enabled(language: str) -> bool:
+    """False while ``language``'s experiment is off.
+
+    A disabled language is treated as if the CLI didn't know it: its templates
+    can't be listed or selected, and messages don't name it.
+    """
+    experiment = LANGUAGE_CONFIGS.get(language, {}).get("experiment")
+    return not experiment or bool(resolve_experiment(experiment))
 
 
 class UnsupportedLanguageError(click.ClickException):
@@ -158,20 +235,18 @@ def find_agent_file(
 ) -> pathlib.Path | None:
     """Find the primary agent file for a language.
 
-    For Python: {agent_directory}/agent.py
-    For Go: {agent_directory}/agent.go
-    For Java: {agent_directory}/**/Agent.java (searches package subdirectories)
-    For TypeScript: {agent_directory}/agent.ts
+    Returns ``root_agent.yaml`` if present, else the language's ``agent_file``
+    from LANGUAGE_CONFIGS: directly in ``agent_directory``, or anywhere below it
+    for languages with ``agent_in_subdirectory`` (Java packages).
 
     Args:
         project_dir: Project root directory
-        language: Language key ('python', 'go', 'java', 'typescript')
+        language: Language key (a LANGUAGE_CONFIGS key)
         agent_directory: Agent directory relative to project root
 
     Returns:
         Path to agent file if found, None otherwise
     """
-    lang_config = get_language_config(language)
     agent_folder = project_dir / agent_directory
 
     if not agent_folder.exists():
@@ -182,19 +257,7 @@ def find_agent_file(
     if yaml_agent.exists():
         return yaml_agent
 
-    agent_file_name = lang_config.get("agent_file")
-    if not agent_file_name:
-        return None
-
-    # For languages with agent in subdirectory (Java package structure)
-    if lang_config.get("agent_in_subdirectory"):
-        for found in agent_folder.rglob(agent_file_name):
-            return found
-        return None
-
-    # Standard case: agent file directly in agent directory
-    agent_file = agent_folder / agent_file_name
-    return agent_file if agent_file.exists() else None
+    return _locate_language_agent_file(agent_folder, get_language_config(language))
 
 
 def validate_agent_file(
@@ -228,15 +291,11 @@ def validate_agent_file(
         return False, f"Could not read {agent_file.name}: {e}"
 
 
-def get_agent_file_hint(
-    dir_path: pathlib.Path,
-    language: str | None = None,
-) -> str:
+def get_agent_file_hint(dir_path: pathlib.Path) -> str:
     """Get hint string for directory selection.
 
     Args:
         dir_path: Directory to check
-        language: Optional language hint
 
     Returns:
         Hint string like ' (has Agent.java)' or ''
@@ -248,23 +307,30 @@ def get_agent_file_hint(
     if (dir_path / "root_agent.yaml").exists():
         return " (has root_agent.yaml)"
 
-    # Check for Java Agent.java (in subdirectories)
-    if any(dir_path.rglob("Agent.java")):
-        return " (has Agent.java)"
-
-    # Check for Go agent.go
-    if (dir_path / "agent.go").exists():
-        return " (has agent.go)"
-
-    # Check for TypeScript agent.ts
-    if (dir_path / "agent.ts").exists():
-        return " (has agent.ts)"
-
-    # Check for Python agent.py
-    if (dir_path / "agent.py").exists():
-        return " (has agent.py)"
+    # A directory holding several languages' agent files gets the hint for the
+    # first one in LANGUAGE_CONFIGS order.
+    for language, lang_config in LANGUAGE_CONFIGS.items():
+        if is_language_enabled(language) and _locate_language_agent_file(
+            dir_path, lang_config
+        ):
+            return f" (has {lang_config['agent_file']})"
 
     return ""
+
+
+def _locate_language_agent_file(
+    agent_folder: pathlib.Path, lang_config: Mapping[str, Any]
+) -> pathlib.Path | None:
+    """Return the language's ``agent_file`` inside ``agent_folder``, if present."""
+    agent_file_name = lang_config["agent_file"]
+
+    # For languages with agent in subdirectory (Java package structure)
+    if lang_config["agent_in_subdirectory"]:
+        return next(agent_folder.rglob(agent_file_name), None)
+
+    # Standard case: agent file directly in agent directory
+    agent_file = agent_folder / agent_file_name
+    return agent_file if agent_file.exists() else None
 
 
 def get_project_version(

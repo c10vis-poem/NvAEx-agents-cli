@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {{cookiecutter.agent_directory}}
+package {{cookiecutter.agent_package}}
 
 // These tests cover the sample GetWeather tool in agent.go. When you replace
 // or remove the sample tools, replace these tests with tests for your own

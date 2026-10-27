@@ -3,6 +3,32 @@
 All notable changes to this project will be documented in this file.
 
 
+## [1.12.0] - 2026-10-27
+
+- **ADK Go is now Generally Available.** The `adk_go` template is out of Preview: it is stable, production-ready and supported on the same terms as `adk_python`. This release also brings:
+  - `agents-cli create --agent <template>` supports ADK Go v2 templates whose `manifest.yaml` declares `language: go`. Templates built for other ADK Go versions are rejected. A declared language that contradicts the base template (or `--base-template`) fails with an error explaining how to fix it.
+  - The server e2e tests in new ADK Go projects time out after 120s instead of 60s, so multi-step agents no longer time out.
+- **The Python agent template is now `adk_python`**, selected with `--agent adk_python` (or `-a adk_python`). `adk` still works as an alias. New projects record `adk_python` in `agents-cli-manifest.yaml`, and upgrading a project recorded as `adk` records `adk_python` too. Enhancing or upgrading these projects requires this CLI version or newer.
+- **New experimental Claude Agent SDK extension.** Create a project with `agents-cli scaffold create --agent google/agents-cli/extensions/claude/template@<version>`, or migrate an existing agent with `scaffold enhance` and that template. It deploys to Agent Runtime or Cloud Run over A2A, calls Claude on Gemini platform only, and comes with Cloud Trace, Cloud Logging, Cloud Monitoring, optional BigQuery Agent Analytics and Cloud SQL sessions. `playground`, `eval dataset synthesize` and `eval optimize` aren't supported, and `publish gemini` is refused on Agent Runtime.
+  - On Agent Runtime, these agents also serve `:query` (`async_create_session`) and `:streamQuery` (`async_stream_query`), so an ingress Agent Gateway can govern them (for example with Model Armor) and `agents-cli run --mode adk` works.
+- The agent template directory can be a nested folder, such as `src/my_agent`, both in remote templates and with `--agent-directory`.
+- `agents-cli scaffold enhance <template>` on a project agents-cli didn't create writes the template's files as `create` would, and moves each of your files it replaces (such as `pyproject.toml`, `README.md`, `Dockerfile`, `.env`) to `.agents-cli-original/`, keeping its path. Your other files stay where they are. Port what you need from the folder, then delete it; enhance won't run again while it exists. New projects' `.gitignore` and `.gcloudignore` exclude the folder.
+- Extension templates can set `settings.session_types`, so `create` offers and accepts only those session types, with the first as the default. A template whose list is empty or names an unknown session type is rejected.
+- `agents-cli scaffold enhance --dry-run` exits with code 2 (was 0) when combined with `--force`, when run with `-y` and no override flags, or when run without a saved `agents-cli-manifest.yaml`.
+- Cloud Run projects run their Cloud Run service on the `hashicorp/google-beta` provider, pinned to `~> 8.7`. Other resources keep `hashicorp/google ~> 7.28`. Existing projects pick it up through `agents-cli scaffold upgrade`; if `terraform init` then reports a locked `google-beta` older than 8.7, run `terraform init -upgrade` once.
+- The server e2e tests in new Python projects time out after 120s instead of 60s, so multi-step agents no longer time out.
+- `agents-cli deploy --dry-run` for Agent Runtime prints the plan even when a check fails. It still exits with code 1.
+- `agents-cli deploy --dry-run` for Agent Runtime warns that it could not verify the secrets when the Secret Manager API is disabled, instead of skipping the check silently.
+- `agents-cli deploy --dry-run` also validates a Cloud Run deployment against Google Cloud.
+- A malformed `--env-vars`, `--secrets` or `--labels` value fails before the project prompt.
+- A failed `agents-cli publish gemini` reports the API's reason (for example a SERVICE_DISABLED message with the enable link) instead of a bare HTTP error.
+- A failed terraform step in `agents-cli infra` exits with a short error naming the step and how to rerun it, instead of a Python traceback.
+- `agents-cli info` lists globally installed skills.
+  - https://github.com/google/agents-cli/issues/96
+- `agents-cli run --mode a2a` no longer prints a streamed reply twice when the agent ends with the full reply as its last chunk.
+- The bundled skills point to `google/adk-recipes` and call its agents "recipes". The ADK catalog is now `references/recipes.md`.
+  - https://github.com/google/agents-cli/issues/97
+
 ## [1.11.0] - 2026-10-20
 
 - Breaking: The `adk@<name>` shortcut has been removed. Pass the recipe's GitHub URL to `agents-cli create` instead, and browse recipes at https://github.com/google/adk-recipes.

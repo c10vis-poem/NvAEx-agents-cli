@@ -30,6 +30,7 @@ import click
 
 from google.agents.cli._git import is_option_like
 from google.agents.cli._output import Console
+from google.agents.cli._project import DEFAULT_BASE_TEMPLATE
 
 from .fs import walk_source_tree
 from .language import get_language_config
@@ -50,6 +51,8 @@ AGENTS_CLI_MANIFEST_FILE = "agents-cli-manifest.yaml"
 
 # Marks a flat template: agent code in the template root rather than a package.
 FLAT_AGENT_DIRECTORY = "."
+_REMOTE_BASE_TEMPLATES = {"python": DEFAULT_BASE_TEMPLATE, "go": "adk_go"}
+_SUPPORTED_REMOTE_LANGUAGES = ", ".join(sorted(_REMOTE_BASE_TEMPLATES))
 # Folders whose agent files are fixtures or helpers, never the agent.
 # frontend/ and tests/ are also overwritten by the base template on render.
 _NON_AGENT_DIRECTORIES = frozenset(
@@ -58,8 +61,10 @@ _NON_AGENT_DIRECTORIES = frozenset(
         "docs",
         "eval",
         "evals",
+        "examples",
         "frontend",
         "notebooks",
+        "samples",
         "scripts",
         "test",
         "tests",
@@ -74,7 +79,7 @@ class RemoteTemplateSpec:
     repo_url: str
     template_path: str
     git_ref: str
-    is_adk_samples: bool = False
+    is_adk_recipes: bool = False
     # ``<ref>/<path>`` from a /tree/ URL; re-split on fetch as refs may contain slashes.
     tree_path: str | None = None
 
@@ -146,7 +151,7 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
             repo_url=repo_url,
             template_path=template_path.strip("/"),
             git_ref=git_ref,
-            is_adk_samples=_is_adk_repo_url(repo_url),
+            is_adk_recipes=_is_adk_repo_url(repo_url),
             tree_path=f"{git_ref}/{template_path}".strip("/"),
         )
 
@@ -172,7 +177,7 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
             repo_url=repo_url,
             template_path=template_path.strip("/"),
             git_ref=git_ref,
-            is_adk_samples=_is_adk_repo_url(repo_url),
+            is_adk_recipes=_is_adk_repo_url(repo_url),
         )
 
     # GitHub shorthand: <org>/<repo>[/<path>][@<ref>]
@@ -190,7 +195,7 @@ def parse_agent_spec(agent_spec: str) -> RemoteTemplateSpec | None:
             repo_url=repo_url,
             template_path=template_path,
             git_ref=git_ref,
-            is_adk_samples=_is_adk_repo_url(repo_url),
+            is_adk_recipes=_is_adk_repo_url(repo_url),
         )
 
     return None
@@ -375,18 +380,21 @@ def load_remote_template_config(
 ) -> dict[str, Any]:
     """Build a remote template's config.
 
-    Starts from the config file the template ships, resolves the agent directory
-    when it declares none, then applies CLI overrides (highest precedence).
+    Starts from the config file the template ships, resolves its language, base
+    template and (when it declares none) agent directory, then applies CLI
+    overrides (highest precedence).
 
     Raises:
         click.ClickException: If templateconfig.yaml is invalid, a config
-            file or its settings is not a mapping, or pyproject.toml's
-            [tool.agents-cli] is not a table.
+            file or its settings is not a mapping, pyproject.toml's
+            [tool.agents-cli] is not a table, or the declared language
+            contradicts the base template or is unsupported and the template
+            declares no base template.
     """
     cli_overrides = cli_overrides or {}
     file_config = _read_template_file_config(template_dir)
     config: dict[str, Any] = {
-        "base_template": "adk",
+        "base_template": DEFAULT_BASE_TEMPLATE,
         "name": template_dir.name,
         "description": "",
         "agent_directory": "app",
@@ -402,11 +410,17 @@ def load_remote_template_config(
             f"of keys to values, not a {type(settings).__name__}."
         )
 
+    language, config["base_template"] = _resolve_language_and_base(
+        template_dir, file_config.declared, settings, cli_overrides
+    )
+    # Recorded only when it changes, so a template declaring nothing keeps empty settings.
+    if language != settings.get("language", "python"):
+        settings["language"] = language
+
     cli_settings = cli_overrides.get("settings")
     cli_sets_agent_directory = isinstance(cli_settings, dict) and bool(
         cli_settings.get("agent_directory")
     )
-    language = settings.get("language", "python")
     template_agent_directory = settings.get("agent_directory")
     if not template_agent_directory and cli_sets_agent_directory:
         # The CLI picks the target; only flatness is still needed, so skip the search.
@@ -427,6 +441,103 @@ def load_remote_template_config(
     return merge_template_configs(config, cli_overrides)
 
 
+def _resolve_language_and_base(
+    template_dir: pathlib.Path,
+    declared: dict[str, Any],
+    settings: dict[str, Any],
+    cli_overrides: dict[str, Any],
+) -> tuple[str, str]:
+    """Return the template's ``(language, base_template)``.
+
+    The declared language picks the base when the template names none. The base
+    that renders the project (``--base-template`` first) then decides the
+    language, since it lays down that language's server and toolchain files.
+    """
+    language = _declared_language(template_dir, declared, settings)
+    cli_base = cli_overrides.get("base_template")
+    base = declared.get("base_template")
+    if not base:
+        language, base = _infer_base_from_language(template_dir.name, language)
+
+    effective_base = get_base_template_name({"base_template": cli_base or base})
+    base_language = next(
+        (lang for lang, name in _REMOTE_BASE_TEMPLATES.items() if name == effective_base),
+        None,
+    )
+    if base_language is None:
+        # adk_java, or the spec a project was created from: keep the declared or settings' language.
+        return language or settings.get("language", "python"), base
+    if language and language != base_language:
+        raise click.ClickException(
+            _language_conflict_message(
+                template_dir.name,
+                language,
+                effective_base,
+                base_language,
+                base_from_cli=bool(cli_base),
+            )
+        )
+    return base_language, base
+
+
+def _declared_language(
+    template_dir: pathlib.Path, declared: dict[str, Any], settings: dict[str, Any]
+) -> str | None:
+    language = (
+        _read_recipe_manifest(template_dir).get("language")
+        or declared.get("language")
+        or settings.get("language")
+    )
+    return str(language).lower() if language else None
+
+
+def _infer_base_from_language(
+    template_name: str, language: str | None
+) -> tuple[str | None, str]:
+    if language and language not in _REMOTE_BASE_TEMPLATES:
+        raise click.ClickException(
+            f"{template_name} declares language '{language}', which remote templates "
+            f"don't support yet (supported: {_SUPPORTED_REMOTE_LANGUAGES}). Set "
+            f"base_template in the template's config to a base that renders "
+            f"'{language}' projects."
+        )
+    return language, _REMOTE_BASE_TEMPLATES.get(
+        language or "python", DEFAULT_BASE_TEMPLATE
+    )
+
+
+def _language_conflict_message(
+    template_name: str,
+    language: str,
+    base: str,
+    base_language: str,
+    *,
+    base_from_cli: bool,
+) -> str:
+    display_name = get_language_config(base_language)["display_name"]
+    conflict = (
+        f"{template_name} declares language '{language}', but base "
+        f"template '{base}' renders {display_name} projects."
+    )
+    if base_from_cli:
+        language_base = _REMOTE_BASE_TEMPLATES.get(language)
+        fix = (
+            f"Use --base-template {language_base}"
+            if language_base
+            else f"Use a --base-template that renders '{language}' projects"
+        )
+        return f"{conflict} {fix}, or drop --base-template."
+    if language not in _REMOTE_BASE_TEMPLATES:
+        return (
+            f"{conflict} Remote templates don't support '{language}' yet "
+            f"(supported: {_SUPPORTED_REMOTE_LANGUAGES})."
+        )
+    return (
+        f"{conflict} Drop base_template from the template's config, or use a "
+        f"{display_name} template."
+    )
+
+
 def resolve_agent_directory(template_dir: pathlib.Path, language: str) -> str | None:
     """Return the directory holding the template's agent file, or None.
 
@@ -434,8 +545,8 @@ def resolve_agent_directory(template_dir: pathlib.Path, language: str) -> str | 
       1. ``app/``
       2. the template folder name in snake_case
       3. the template root, returned as ``FLAT_AGENT_DIRECTORY``
-      4. the shallowest valid directory anywhere outside ``_NON_AGENT_DIRECTORIES``,
-         then alphabetical
+      4. the shallowest valid outermost directory outside ``_NON_AGENT_DIRECTORIES``,
+         then alphabetical; it may be nested, e.g. ``src/my_agent``
       5. None, so the caller keeps the base template's agent_directory
     """
     agent_file = get_language_config(language)["agent_file"]
@@ -443,31 +554,33 @@ def resolve_agent_directory(template_dir: pathlib.Path, language: str) -> str | 
     if conventional is not None:
         return conventional
 
-    found, skipped = _find_agent_directories(template_dir, agent_file, language)
-    if not found and skipped:
-        logging.warning(
-            "Ignored %s in %s: an agent directory must be a top-level package "
-            "with a valid %s name, so the project falls back to the base "
-            "template's agent directory. Move the agent to a top-level folder.",
-            ", ".join(f"{d}/{agent_file}" for d in skipped),
-            template_dir.name,
-            get_language_config(language)["display_name"],
-        )
-    if found:
-        if len(found) > 1:
+    found = _find_agent_directories(template_dir, agent_file)
+    valid = [d for d in found if _is_valid_agent_directory(d, language)]
+    if not valid:
+        if found:
             logging.warning(
-                "Found %d %s files in %s; using %s/%s. Pass --agent-directory to "
-                "pick another.",
-                len(found),
-                agent_file,
+                "Ignored %s in %s: not a valid %s agent directory, so the project "
+                "falls back to the base template's agent directory. Rename or move "
+                "the folder, or pass --agent-directory.",
+                ", ".join(f"{d}/{agent_file}" for d in found),
                 template_dir.name,
-                found[0],
-                agent_file,
+                get_language_config(language)["display_name"],
             )
-        return found[0]
+        else:
+            logging.debug("No %s found in %s", agent_file, template_dir)
+        return None
 
-    logging.debug("No %s found in %s", agent_file, template_dir)
-    return None
+    if len(valid) > 1:
+        logging.warning(
+            "Found %d %s files in %s; using %s/%s. Pass --agent-directory to "
+            "pick another.",
+            len(valid),
+            agent_file,
+            template_dir.name,
+            valid[0],
+            agent_file,
+        )
+    return valid[0]
 
 
 def _conventional_agent_directory(
@@ -486,36 +599,25 @@ def _conventional_agent_directory(
     return None
 
 
-def _find_agent_directories(
-    template_dir: pathlib.Path, agent_file: str, language: str
-) -> tuple[list[str], list[str]]:
-    """``(valid, skipped)`` directories holding ``agent_file``, each in search order."""
+def _find_agent_directories(template_dir: pathlib.Path, agent_file: str) -> list[str]:
+    found: list[str] = []
+    for directory, files in walk_source_tree(template_dir, _NON_AGENT_DIRECTORIES):
+        relative = directory.relative_to(template_dir).as_posix()
+        # Agent files inside an agent package (e.g. sub_agents/x/agent.py) belong to it.
+        if agent_file in files and not any(relative.startswith(f"{p}/") for p in found):
+            found.append(relative)
+    return sorted(found, key=lambda path: (path.count("/"), path))
+
+
+def _is_valid_agent_directory(path: str, language: str) -> bool:
     # Lazy import to avoid circular dependency
     from .template import validate_agent_directory_name
 
-    found = []
-    skipped = []
-    for directory, files in walk_source_tree(template_dir, _NON_AGENT_DIRECTORIES):
-        if agent_file not in files or directory == template_dir:
-            continue
-        relative = directory.relative_to(template_dir).as_posix()
-        try:
-            validate_agent_directory_name(relative, language=language)
-        except ValueError:
-            logging.debug(
-                "Skipping %s/%s: %s is not a valid agent directory",
-                relative,
-                agent_file,
-                relative,
-            )
-            skipped.append(relative)
-            continue
-        found.append(relative)
-
-    def search_order(path: str) -> tuple[int, str]:
-        return path.count("/"), path
-
-    return sorted(found, key=search_order), sorted(skipped, key=search_order)
+    try:
+        validate_agent_directory_name(path, language=language)
+    except ValueError:
+        return False
+    return True
 
 
 def _read_template_file_config(template_dir: pathlib.Path) -> _TemplateFileConfig:
@@ -615,13 +717,13 @@ def get_base_template_name(config: dict[str, Any]) -> str:
         config: Template configuration dictionary
 
     Returns:
-        Base template name (defaults to "adk"), with legacy aliases resolved
+        Base template name (defaults to "adk_python"), with legacy aliases resolved
     """
     # Lazy import to avoid circular dependency
     from .template import resolve_agent_alias
 
-    base_template = config.get("base_template", "adk")
-    return resolve_agent_alias(base_template) or "adk"
+    base_template = config.get("base_template", DEFAULT_BASE_TEMPLATE)
+    return resolve_agent_alias(base_template) or DEFAULT_BASE_TEMPLATE
 
 
 def merge_template_configs(

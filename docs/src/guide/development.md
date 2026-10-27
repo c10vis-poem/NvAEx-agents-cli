@@ -27,7 +27,7 @@ Create a new project from a template:
 agents-cli create my-agent -i
 ```
 
-Choose your agent template (`adk`) and deployment target during creation. For fast prototyping without infrastructure decisions:
+Choose your agent template (`adk_python`) and deployment target during creation. For fast prototyping without infrastructure decisions:
 
 ```bash
 agents-cli create my-agent --prototype --yes
@@ -37,7 +37,7 @@ You can add deployment support later with `agents-cli scaffold enhance`.
 
 ### Extending the starter agent
 
-The scaffold creates a starter agent: a model, an instruction, and one sample tool. Anything beyond that comes from a recipe. Recipes are working agents in [google/adk-samples](https://github.com/google/adk-samples) that you clone and adapt.
+The scaffold creates a starter agent: a model, an instruction, and one sample tool. Anything beyond that comes from a recipe. Recipes are working agents in [google/adk-recipes](https://github.com/google/adk-recipes) that you clone and adapt.
 
 Recipes cover:
 
@@ -48,7 +48,7 @@ Recipes cover:
 - Approval gates before risky actions
 - Event-driven runs
 
-Your coding agent picks the recipe for you. The `google-agents-cli-adk-code` skill contains a [topic index](../reference/skills.md#adk-code) (or the [samples reference](https://github.com/google/agents-cli/blob/main/skills/google-agents-cli-adk-code/references/samples.md)) that maps each need to a recipe, and the workflow skill tells the agent to read the index before writing code. Ask for an agent that answers questions from your docs, and it opens `rag-agent-search`.
+Your coding agent picks the recipe for you. The `google-agents-cli-adk-code` skill contains a [topic index](../reference/skills.md#adk-code) (or the [recipes reference](https://github.com/google/agents-cli/blob/main/skills/google-agents-cli-adk-code/references/recipes.md)) that maps each need to a recipe, and the workflow skill tells the agent to read the index before writing code. Ask for an agent that answers questions from your docs, and it opens `rag-agent-search`.
 
 ---
 

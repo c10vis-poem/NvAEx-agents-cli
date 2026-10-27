@@ -24,7 +24,7 @@ resource "google_vertex_ai_reasoning_engine" "app" {
 
   spec {
     agent_framework = var.agent_framework
-{%- if cookiecutter.agent_runtime_identity_default == "agent_identity" %}
+{%- if cookiecutter.agent_identity_enabled %}
     service_account = ""
     identity_type   = "AGENT_IDENTITY"
 {%- else %}
@@ -55,7 +55,7 @@ resource "google_vertex_ai_reasoning_engine" "app" {
       }
 
       env {
-        name  = "{% if cookiecutter.language == "python" %}GOOGLE_GENAI_USE_ENTERPRISE{% else %}GOOGLE_GENAI_USE_VERTEXAI{% endif %}"
+        name  = "{{cookiecutter.genai_backend_env_var}}"
         value = "True"
       }
 
@@ -69,7 +69,7 @@ resource "google_vertex_ai_reasoning_engine" "app" {
       # GCS via the completion hook, so NO_CONTENT.
       env {
         name  = "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
-        value = "{% if cookiecutter.language == 'go' %}false{% else %}NO_CONTENT{% endif %}"
+        value = "{{cookiecutter.otel_capture_message_content_default}}"
       }
 
       env {
@@ -101,7 +101,7 @@ resource "google_vertex_ai_reasoning_engine" "app" {
         name  = "GOOGLE_CLOUD_AGENT_ENGINE_ENABLE_TELEMETRY"
         value = "true"
       }
-{%- if cookiecutter.bq_analytics %}
+{%- if cookiecutter.supports_bq_analytics and cookiecutter.bq_analytics %}
       env {
         name  = "BQ_ANALYTICS_DATASET_ID"
         value = google_bigquery_dataset.telemetry_dataset.dataset_id

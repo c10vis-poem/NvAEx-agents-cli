@@ -1,0 +1,46 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# yaml-language-server: $schema=https://raw.githubusercontent.com/google/agents-cli/main/schemas/agents-cli-extension-v1alpha1.schema.json
+
+schema: agents-cli-extension/v1alpha1
+name: claude
+description: Run Claude Agent SDK agents through the agents-cli lifecycle.
+
+commands:
+  override:
+    run:
+      run: ["uv", "run", "python", "scripts/run.py"]
+      description: Run the agent with a single prompt, in process.
+
+    # Old command name, so older CLIs apply it too; newer ones map it to `publish gemini`.
+    publish.gemini-enterprise:
+      run: ["uv", "run", "--with", "pyyaml", "python", "scripts/publish.py"]
+      description: Register over A2A; refuse on Agent Runtime, which needs ADK.
+
+    eval.generate:
+      run: ["uv", "run", "--with", "pyyaml", "python", "scripts/eval_generate.py"]
+      description: Generate eval traces from the agent (EvaluationDataset shape).
+
+    playground:
+      run: ["uv", "run", "python", "scripts/unsupported.py", "playground"]
+      description: Unsupported for Claude agents (the SDK has no local dev UI).
+
+    eval.dataset:
+      run: ["uv", "run", "python", "scripts/unsupported.py", "eval dataset"]
+      description: Unsupported for Claude agents (needs an ADK agent to introspect).
+
+    eval.optimize:
+      run: ["uv", "run", "python", "scripts/unsupported.py", "eval optimize"]
+      description: Unsupported for Claude agents (needs an ADK agent to introspect).

@@ -1,0 +1,28 @@
+.venv/
+.git/
+**/__pycache__/
+.ruff_cache/
+.pytest_cache/
+.env
+artifacts/
+.agents-cli-original/
+.python-version
+# Your coding assistant's Claude Code files; the agent's live in agent_config/.
+/.claude
+/CLAUDE.md
+/CLAUDE.local.md
+/.mcp.json
+# Secrets and deployment state: pass secrets with `agents-cli deploy --secrets`.
+**/.env
+**/.env.*
+!.env.example
+**/*.pem
+**/*-key.json
+**/*credentials*.json
+**/service-account*.json
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+# Not needed at runtime.
+.github/
+tests/

@@ -437,7 +437,7 @@ def run_terraform(
     init_args: list[str] = [terraform_path, "init", "-input=false"]
     if local_state:
         init_args.append("-backend=false")
-    run_command(init_args, cwd=tf_dir)
+    _run_terraform_step(init_args, tf_dir=tf_dir)
 
     if apply:
         # -auto-approve is safe here: the user already reviewed changes via
@@ -457,7 +457,29 @@ def run_terraform(
         for key, value in extra_vars.items():
             action_args.extend(["-var", f"{key}={value}"])
 
-    run_command(action_args, cwd=tf_dir, env_vars=env_vars)
+    _run_terraform_step(action_args, tf_dir=tf_dir, env_vars=env_vars)
+
+
+def _run_terraform_step(
+    args: list[str], *, tf_dir: Path, env_vars: dict[str, str] | None = None
+) -> None:
+    """Run one terraform step, reporting a failure without a traceback.
+
+    Terraform has already printed its own errors by the time it exits non-zero,
+    so the message only names the step and how to resume.
+    """
+    try:
+        run_command(args, cwd=tf_dir, env_vars=env_vars)
+    except subprocess.CalledProcessError as e:
+        message = (
+            f"`terraform {args[1]}` failed in {tf_dir} (exit code {e.returncode}).\n"
+            "  Terraform's errors are printed above. Fix them and rerun the same "
+            "command."
+        )
+        # Only apply writes state; after init or plan nothing was created.
+        if args[1] == "apply":
+            message += " Resources already created stay in the Terraform state."
+        raise click.ClickException(message) from e
 
 
 def is_github_authenticated() -> bool:

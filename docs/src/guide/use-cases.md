@@ -48,7 +48,7 @@ Single-agent patterns with no inter-agent coordination. Suitable as first projec
 
 ### Daily News Bot
 
-*Beginner · `adk`*
+*Beginner · `adk_python`*
 
 Fetch headlines from a configured set of RSS feeds, select the most relevant items with an LLM, and publish to Google Chat or email. Schedule with Cloud Scheduler.
 
@@ -60,7 +60,7 @@ For scheduling and rollout, see [Deployment](deployment.md) and [CI/CD](cicd.md)
 
 ### Industry Watch
 
-*Beginner · `adk`*
+*Beginner · `adk_python`*
 
 Track public release notes, documentation updates, job postings, and conference talks across your industry. Surface shipped features and hiring trends. Persist findings to a queryable store for week-over-week review.
 
@@ -76,7 +76,7 @@ A single agent paired with a feedback loop, retrieval-augmented generation, or s
 
 ### Self-Tuning Support
 
-*Intermediate · `adk`*
+*Intermediate · `adk_python`*
 
 Run evaluation after each conversation, identify gaps in knowledge or behavior, and draft new evaluation cases for weak responses. Coverage adapts to the questions customers actually ask.
 
@@ -88,7 +88,7 @@ The [Evaluation Guide](evaluation.md) describes the eval-and-fix loop. Pair with
 
 ### Technical Investigation
 
-*Intermediate · `adk`*
+*Intermediate · `adk_python`*
 
 Accept a question such as "Why did latency increase in the payments service last month?" Read logs, trace deployments, and correlate with past incidents. Produce a timeline and root-cause analysis.
 
@@ -98,7 +98,7 @@ Build an investigation agent. I ask questions like "why did X break last week" a
 
 ### Regression Detector
 
-*Intermediate · `adk`*
+*Intermediate · `adk_python`*
 
 Compare current metrics and log patterns against historical pre-incident signatures. File preventive issues when current behavior matches a known regression pattern. Run on a nightly schedule.
 
@@ -116,7 +116,7 @@ Index Google Chat, email, design documents, and meeting notes for decision recor
 Build a RAG agent that indexes Google Chat, email, and design docs nightly. Surface past decisions when someone proposes something we've already discussed.
 ```
 
-RAG is a clone-and-study recipe — see [Extending the starter agent](development.md#extending-the-starter-agent) for the samples to adapt.
+RAG is a clone-and-study recipe — see [Extending the starter agent](development.md#extending-the-starter-agent) for the recipes to adapt.
 
 ### Institutional Memory Navigator
 
@@ -148,7 +148,7 @@ Build a due-diligence agent that indexes a target codebase, runs security and li
 
 ### Security Audit
 
-*Advanced · `adk`*
+*Advanced · `adk_python`*
 
 Map data flows across the codebase to verify GDPR, HIPAA, or SOC2 compliance. Trace sensitive data from ingestion through deletion. Flag gaps such as analytics logs that retain user data beyond the configured retention policy.
 
@@ -170,7 +170,7 @@ Build a RAG agent that drafts RFP responses by pulling from past proposals, curr
 
 ### Incident Response Coordination
 
-*Advanced (A2A) · `adk`*
+*Advanced (A2A) · `adk_python`*
 
 Run specialist agents in parallel during an outage: one bisects recent changes, one correlates errors across services, one searches past incidents, and one drafts customer communications. Parallel investigation reduces time-to-cause compared to sequential troubleshooting.
 
@@ -178,11 +178,11 @@ Run specialist agents in parallel during an outage: one bisects recent changes, 
 Build an A2A multi-agent system for incident response. Specialists for bisection, error correlation, past-incident lookup, and customer comms — coordinated in parallel.
 ```
 
-The `adk` template exposes the A2A protocol out of the box. Each specialist runs as a service, and the coordinator orchestrates execution.
+The `adk_python` template exposes the A2A protocol out of the box. Each specialist runs as a service, and the coordinator orchestrates execution.
 
 ### Distributed Code Migration
 
-*Advanced (A2A) · `adk`*
+*Advanced (A2A) · `adk_python`*
 
 Run specialist agents for a large framework migration: one handles data models, one handles API contracts, one handles tests, and one handles validation. Specialists coordinate over A2A to share findings about breaking changes. GKE is the recommended runtime when running many concurrent specialist instances.
 

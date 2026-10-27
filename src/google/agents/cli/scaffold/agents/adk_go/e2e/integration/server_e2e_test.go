@@ -39,6 +39,9 @@ const (
 	healthCheckURL = baseURL + "/list-apps"
 )
 
+// agentRunTimeout bounds requests that run the agent end to end.
+const agentRunTimeout = 120 * time.Second
+
 // startServer builds the Go server and starts it as a subprocess.
 // Server starts with A2A protocol support.
 func startServer(t *testing.T) *exec.Cmd {
@@ -55,7 +58,7 @@ func startServer(t *testing.T) *exec.Cmd {
 	cmd := exec.Command(bin, "web", "--port", "8000",
 		"api", "-path_prefix", "/", "a2a", "appinfo")
 	cmd.Dir = "../../" // Go to project root
-	cmd.Env = append(os.Environ(), "INTEGRATION_TEST=TRUE")
+	cmd.Env = append(os.Environ(), "INTEGRATION_TEST=TRUE", "USE_IN_MEMORY_SESSION=true")
 	// Discard output to avoid I/O issues on process kill
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
@@ -211,7 +214,7 @@ func TestA2AMessageSend(t *testing.T) {
 		t.Fatalf("Failed to marshal request: %v", err)
 	}
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: agentRunTimeout}
 	req, err := http.NewRequest("POST", a2aURL, bytes.NewBuffer(body))
 	if err != nil {
 		t.Fatalf("Failed to create request: %v", err)

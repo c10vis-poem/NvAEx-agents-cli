@@ -48,7 +48,7 @@ resource "google_project_iam_member" "other_projects_roles" {
   member     = "serviceAccount:${resource.google_service_account.cicd_runner_sa.email}"
   depends_on = [resource.google_project_service.cicd_services, resource.google_project_service.deploy_project_services]
 }
-{%- if not (cookiecutter.deployment_target == 'agent_runtime' and cookiecutter.agent_runtime_identity_default == 'agent_identity') %}
+{%- if not cookiecutter.agent_identity_enabled %}
 # 3. Grant application SA the required permissions to run the application
 resource "google_project_iam_member" "app_sa_roles" {
   for_each = {

@@ -29,7 +29,15 @@ import click
 import httpx
 import requests
 from a2a.client import ClientConfig
-from a2a.types import Message, Part, Role, SendMessageRequest, TaskState, TaskStatus
+from a2a.types import (
+    Message,
+    Part,
+    Role,
+    SendMessageRequest,
+    TaskArtifactUpdateEvent,
+    TaskState,
+    TaskStatus,
+)
 from a2a.utils.constants import (
     AGENT_CARD_WELL_KNOWN_PATH,
     PROTOCOL_VERSION_1_0,
@@ -52,6 +60,7 @@ from google.agents.cli._modes import (
     RUN_MODES,
 )
 from google.agents.cli._project import (
+    agent_package_name,
     chdir_project_root,
     read_project_config,
     require_agent_directory,
@@ -104,6 +113,8 @@ class _SseEventResult(NamedTuple):
     last_author: str | None
     # True when the event rendered content or surfaced an error.
     rendered: bool
+    # Text of the partial events printed since the last final one.
+    streamed: str
 
 
 def _resolve_dispatch_target(
@@ -136,7 +147,7 @@ def _resolve_dispatch_target(
             chdir_project_root()
             cfg = read_project_config()
             require_agent_directory(cfg)
-            resolved = cfg.agent_directory
+            resolved = agent_package_name(cfg.agent_directory)
         return _DispatchTarget(
             service_url=url,
             headers=build_remote_headers(custom_headers, url),
@@ -160,7 +171,7 @@ def _resolve_dispatch_target(
         service_url=f"http://127.0.0.1:{server.port}{base_path}",
         headers={},
         mode=mode or MODE_ADK,
-        app_name=app_name or cfg.agent_directory,
+        app_name=app_name or agent_package_name(cfg.agent_directory),
         started_server=server.started,
         server_pid=server.pid,
     )
@@ -215,7 +226,7 @@ def _handle_stop_server(ctx: click.Context, _param: click.Parameter, value: bool
     default=None,
     help=(
         "Agent name for remote ADK SSE / A2A endpoints. "
-        "Defaults to the local project's agent_directory; "
+        "Defaults to the basename of the local project's agent_directory; "
         "specify to query a different agent or to run from outside a project."
     ),
 )
@@ -584,6 +595,7 @@ def _print_sse_event(
     last_author: str | None,
     verbose: bool,
     artifacts: list[str],
+    streamed: str,
 ) -> _SseEventResult:
     """Process and print a single SSE/NDJSON/Live event.
 
@@ -604,6 +616,23 @@ def _print_sse_event(
     rendered = False
     content = event.get("content")
     parts = content.get("parts", []) if isinstance(content, dict) else []
+
+    # ADK closes a run of partial events with a final event holding their
+    # whole text (a remote A2A agent's streamed reply comes this way): print
+    # only what it adds to the text already streamed.
+    text = "".join(part.get("text") or "" for part in parts if not part.get("thought"))
+    if event.get("partial"):
+        streamed += text
+    else:
+        if streamed and all(
+            part.get("text") and not part.get("thought") for part in parts
+        ):
+            if text.startswith(streamed):
+                parts = [{"text": text[len(streamed) :]}]
+            elif streamed.endswith(text):
+                # The whole text can leave out what streamed before a tool call.
+                parts = []
+        streamed = ""
 
     if parts:
         last_author = _print_author_tag(event.get("author"), last_author)
@@ -631,7 +660,7 @@ def _print_sse_event(
     if verbose:
         click.echo()
         click.secho(json.dumps(event, indent=2), dim=True)
-    return _SseEventResult(last_author, rendered)
+    return _SseEventResult(last_author, rendered, streamed)
 
 
 def _create_adk_session(base_url: str, app_name: str, headers: dict) -> str:
@@ -696,6 +725,7 @@ def _query_adk_live(
     from websockets.exceptions import ConnectionClosedError, InvalidHandshake
 
     last_author = None
+    streamed = ""
     artifacts: list[str] = []
     # Separate from last_author: an author-less content frame prints without
     # updating it, so it can't gate the "no output" note.
@@ -712,8 +742,8 @@ def _query_adk_live(
             if event is None:
                 continue  # turn boundary; a single turn has just the one
             event = _without_inline_audio(event)
-            last_author, printed = _print_sse_event(
-                event, last_author, verbose, artifacts
+            last_author, printed, streamed = _print_sse_event(
+                event, last_author, verbose, artifacts, streamed
             )
             rendered = printed or rendered
     except ConnectionClosedError as exc:
@@ -774,6 +804,7 @@ def _query_adk_sse(
         click.echo(f"[user]: {user_text}")
 
     last_author = None
+    streamed = ""
     artifacts: list[str] = []
     rendered_any = False
     user_message = {"role": "user", "parts": parts}
@@ -786,8 +817,8 @@ def _query_adk_sse(
             headers=headers,
             user_id=_CLI_USER_ID,
         ):
-            last_author, rendered = _print_sse_event(
-                event, last_author, verbose, artifacts
+            last_author, rendered, streamed = _print_sse_event(
+                event, last_author, verbose, artifacts, streamed
             )
             rendered_any = rendered_any or rendered
     except requests.HTTPError as exc:
@@ -904,6 +935,7 @@ def _query_legacy_agent_runtime_sse(
                 f"  {resp.text}{hint}"
             )
         last_author = None
+        streamed = ""
         artifacts: list[str] = []
         rendered_any = False
         for line in resp.iter_lines(decode_unicode=True):
@@ -913,8 +945,8 @@ def _query_legacy_agent_runtime_sse(
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            last_author, rendered = _print_sse_event(
-                event, last_author, verbose, artifacts
+            last_author, rendered, streamed = _print_sse_event(
+                event, last_author, verbose, artifacts, streamed
             )
             rendered_any = rendered_any or rendered
 
@@ -1077,12 +1109,34 @@ async def _query_a2a_async(
                 _print_a2a_part(part, artifacts)
                 rendered_any = True
 
+        # Text printed so far, per artifact id.
+        printed: dict[str, str] = {}
+
+        def _render_artifact_update(update: TaskArtifactUpdateEvent) -> None:
+            """Print an artifact chunk; a chunk that replaces printed text (no
+            append) prints only what it adds, so a reply streamed in deltas and
+            then sent whole shows once.
+            """
+            render_parts = list(update.artifact.parts)
+            artifact_id = update.artifact.artifact_id
+            shown = printed.get(artifact_id, "")
+            text = "".join(part.text for part in render_parts)
+            full = shown + text if update.append else text
+            printed[artifact_id] = full
+            if not update.append and shown and all(part.text for part in render_parts):
+                if full.startswith(shown):
+                    render_parts = [Part(text=full[len(shown) :])]
+                elif shown.endswith(full):
+                    # The whole reply can leave out what streamed before a tool call.
+                    render_parts = []
+            _render_a2a_parts(render_parts)
+
         async for chunk in a2a_client.send_message(SendMessageRequest(message=msg)):
             status = None
             if chunk.HasField("artifact_update"):
                 if not response_session_id and chunk.artifact_update.context_id:
                     response_session_id = chunk.artifact_update.context_id
-                _render_a2a_parts(list(chunk.artifact_update.artifact.parts))
+                _render_artifact_update(chunk.artifact_update)
             elif chunk.HasField("task"):
                 if not response_session_id and chunk.task.context_id:
                     response_session_id = chunk.task.context_id

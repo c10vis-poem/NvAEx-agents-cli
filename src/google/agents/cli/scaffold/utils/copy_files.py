@@ -30,10 +30,6 @@ _TOOL_CACHES = frozenset(
     {"__pycache__", ".ruff_cache", ".pytest_cache", ".mypy_cache", ".venv"}
 )
 
-# In a flat-structure template, files with these extensions go to the agent
-# directory; everything else goes to the project root.
-_FLAT_AGENT_FILE_EXTENSIONS = frozenset({".py"})
-
 # Flat-structure entries never copied into the generated project.
 _FLAT_SKIP_FILES = frozenset(
     {"pyproject.toml", "uv.lock", "README.md", ".gitignore", "__pycache__"}
@@ -53,6 +49,7 @@ class CopyOptions:
             template's guide replaces the base one whatever the project calls it.
         skip_secret_files: Drop credential files (``.env`` / ``.env.*``) while
             copying.
+        skip_root_files: Names not to copy from the top level of the source.
     """
 
     overwrite: bool = False
@@ -60,6 +57,7 @@ class CopyOptions:
     keep_template_dir: bool = False
     guidance_filename: str | None = None
     skip_secret_files: bool = False
+    skip_root_files: frozenset[str] = frozenset()
 
 
 def copy_files(
@@ -175,13 +173,14 @@ def copy_flat_structure_agent_files(
     dst: pathlib.Path,
     agent_directory: str,
     *,
+    agent_extensions: frozenset[str],
     clone_root: pathlib.Path | None = None,
     options: CopyOptions | None = None,
 ) -> None:
     """Copy agent files from a flat structure template to the agent directory.
 
-    For flat structure templates, Python files (*.py) in the root are copied
-    to the agent directory, while other files are copied to the project root.
+    Root files with an ``agent_extensions`` suffix (the template's source files)
+    go to the agent directory; everything else goes to the project root.
 
     Security: the resolved destination path is verified to be contained within
     *dst* before any write occurs. Symlinks are handled like the standard path
@@ -192,9 +191,10 @@ def copy_flat_structure_agent_files(
         src: Source path (template root with flat structure)
         dst: Destination path (project root)
         agent_directory: Target agent directory name
+        agent_extensions: Suffixes of the files that go to the agent directory.
         clone_root: Repository root that materialized symlink targets must stay
             within. When None, symlinks are refused rather than followed.
-        options: Copy policy.
+        options: Copy policy; ``skip_root_files`` adds to ``_FLAT_SKIP_FILES``.
     """
     if options is None:
         options = CopyOptions()
@@ -203,8 +203,9 @@ def copy_flat_structure_agent_files(
     _assert_path_within(agent_dst, dst)
     agent_dst.mkdir(parents=True, exist_ok=True)
 
+    skipped = _FLAT_SKIP_FILES | options.skip_root_files
     for item in src.iterdir():
-        if item.name.startswith(".") or item.name in _FLAT_SKIP_FILES:
+        if item.name.startswith(".") or item.name in skipped:
             continue
         # A symlink is materialized from its vetted target; a plain entry is
         # copied from itself. Either way it is named and classified below by the
@@ -218,6 +219,7 @@ def copy_flat_structure_agent_files(
             source,
             dst=dst,
             agent_dst=agent_dst,
+            agent_extensions=agent_extensions,
             clone_root=clone_root,
             options=options,
         )
@@ -358,7 +360,8 @@ def _copy_dir(
             raise
 
     for item in src.iterdir():
-        if _should_skip(item, options):
+        is_skipped_root_file = depth == 0 and item.name in options.skip_root_files
+        if is_skipped_root_file or _should_skip(item, options):
             logging.debug("Skipping file/directory: %s", item)
             continue
         dest = _destination_for(item, dst, options)
@@ -417,6 +420,7 @@ def _place_flat_entry(
     *,
     dst: pathlib.Path,
     agent_dst: pathlib.Path,
+    agent_extensions: frozenset[str],
     clone_root: pathlib.Path | None,
     options: CopyOptions,
 ) -> None:
@@ -436,7 +440,7 @@ def _place_flat_entry(
         )
         return
 
-    if item.suffix in _FLAT_AGENT_FILE_EXTENSIONS:
+    if item.suffix in agent_extensions:
         dest_file = agent_dst / item.name
     else:
         dest_file = _destination_for(item, dst, options)
